@@ -7,9 +7,16 @@ class Measure:
     # An implementation of a class that represents finitely supported measures on Omega
     def __init__(
         self,
+        matrix: np.ndarray = np.array([]),
         support: np.ndarray = np.array([]),
         coefficients: np.ndarray = np.array([]),
     ) -> None:
+        if len(matrix):
+            # Supports and coefficients are encodes in a single matrix
+            if len(matrix.shape) == 1:
+                matrix = matrix.reshape(1, -1)
+            coefficients = matrix[:, 0]
+            support = matrix[:, 1:]
         support, index = np.unique(np.array(support), axis=0, return_index=True)
         coefficients = np.array(coefficients)[index].astype(float)
         non_zero_index = np.where(coefficients != 0)[0]
@@ -51,6 +58,9 @@ class Measure:
             support=self.support.copy(), coefficients=self.coefficients.copy()
         )
 
+    def to_matrix(self) -> np.ndarray:
+        return np.hstack((self.coefficients.copy().reshape(-1, 1), self.support.copy()))
+
     def __add__(self, other: "Measure") -> "Measure":
         # Add two measures
         if not isinstance(other, Measure):
@@ -82,6 +92,4 @@ class Measure:
         return new
 
     def __str__(self) -> str:
-        return (
-            f"Measure with support {self.support} and coefficients {self.coefficients}"
-        )
+        return f"Measure with support\n{self.support}\nand coefficients\n{self.coefficients}"
