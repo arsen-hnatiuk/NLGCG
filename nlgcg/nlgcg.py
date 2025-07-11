@@ -2,7 +2,8 @@ import numpy as np
 import logging
 import time
 import jax
-from typing import Callable
+import jaxlib
+from typing import Callable, Union
 from sklearn.utils import gen_batches
 from lib.default_values import *
 from lib.ssn import SSN
@@ -69,9 +70,17 @@ class NLGCG:
         self.newton_p = 2 + newton_p  # For Newton step acceptance condition
         self.descent_constant = descent_constant  # For Newton step acceptance condition
 
-    def project_into_domain(self, x: np.ndarray) -> np.ndarray:
+    def project_into_domain(
+        self, x: Union[np.ndarray, jaxlib.xla_extension.ArrayImpl]
+    ) -> np.ndarray:
         # Project an array into domain, parallelized
-        for i, bounds in zip(range(x.shape[1]), self.Omega):
+        x = np.array(x).copy()
+        if x.shape[1] > self.Omega.shape[0]:
+            # Also project the weights
+            local_Omega = np.vstack((np.array([-self.M, self.M]), self.Omega))
+        else:
+            local_Omega = self.Omega
+        for i, bounds in zip(range(x.shape[1]), local_Omega):
             column = x[:, i].copy()
             x[:, i] = np.clip(column, bounds[0], bounds[1])
         return x
@@ -91,7 +100,9 @@ class NLGCG:
             np.array(
                 np.meshgrid(
                     *(
-                        np.linspace(bound[0], bound[1], self.global_search_resolution)
+                        np.linspace(bound[0], bound[1], self.global_search_resolution)[
+                            1:
+                        ]
                         for bound in self.Omega
                     )
                 )
@@ -113,16 +124,17 @@ class NLGCG:
         mode: str = "deterministic",
     ) -> tuple:
         p_norm = lambda x: np.abs(p_u(x))
+
         if mode == "stochastic":
-            sample_lazy = 1e3
-            sample_exact = 1e4
+            sample_lazy = int(1e3)
+            sample_exact = int(1e4)
             sample_grid = self.sample_domain(sample_lazy)
             grid = np.vstack((sample_grid, u.support))
             grid_vals = p_norm(grid)
             max_ind = np.argmax(grid_vals)
             best_val = grid_vals[max_ind]
             best_point = grid[max_ind]
-            phi_val = np.max(self.M * (best_val - self.alpha), 0) + q_u
+            phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
             if phi_val >= self.M * epsilon:
                 success = True  # Found a desired point
             else:
@@ -136,7 +148,7 @@ class NLGCG:
                 max_ind = np.argmax(grid_vals)
                 best_val = grid_vals[max_ind]
                 best_point = grid[max_ind]
-                phi_val = np.max(self.M * (best_val - self.alpha), 0) + q_u
+                phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
                 if phi_val >= self.M * epsilon:
                     success = True  # Found a desired point
                 else:
@@ -148,8 +160,8 @@ class NLGCG:
             grid_vals = p_norm(grid)
             max_ind = np.argmax(grid_vals)
             best_val = grid_vals[max_ind]
-            best_point = grid[max_ind]
-            phi_val = np.max(self.M * (best_val - self.alpha), 0) + q_u
+            best_point = grid[max_ind].copy()
+            phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
             point_steps = 0
             while point_steps < self.stop_search and phi_val < self.M * epsilon:
                 batching_factor = (
@@ -162,7 +174,8 @@ class NLGCG:
                     if phi_val >= self.M * epsilon:
                         break
                     batch_points = grid[batch]
-                    new_points = np.zeros(batch_points.shape)
+                    new_points_plus = np.zeros(batch_points.shape)
+                    new_points_minus = np.zeros(batch_points.shape)
                     gradients = grad_P(batch_points)
                     hessians = hess_P(batch_points)
                     for i, (point, gradient, hessian) in enumerate(
@@ -174,23 +187,40 @@ class NLGCG:
                     ):
                         try:
                             d = np.linalg.solve(hessian, -gradient)  # Newton step
-                            new_points[i] = point + d
                         except np.linalg.LinAlgError:
-                            new_points[i] = point + 0.1 * gradient
-                    projected_new_points = self.project_into_domain(new_points).copy()
-                    p_vals = p_norm(projected_new_points)
+                            d = 0.1 * gradient
+                        new_points_plus[i] = point + d
+                        new_points_minus[i] = point - d
+                    projected_new_points_plus = self.project_into_domain(
+                        new_points_plus
+                    ).copy()
+                    projected_new_points_minus = self.project_into_domain(
+                        new_points_minus
+                    ).copy()
+                    p_vals_plus = p_norm(projected_new_points_plus)
+                    p_vals_minus = p_norm(projected_new_points_minus)
+                    plus_bigges_index = p_vals_plus > p_vals_minus
+                    p_vals = np.maximum(p_vals_plus, p_vals_minus)
+                    projected_new_points = np.zeros(batch_points.shape)
+                    projected_new_points[plus_bigges_index] = projected_new_points_plus[
+                        plus_bigges_index
+                    ]
+                    projected_new_points[~plus_bigges_index] = (
+                        projected_new_points_minus[~plus_bigges_index]
+                    )
                     grid[batch] = projected_new_points
                     grid_vals[batch] = p_vals
                     max_ind = np.argmax(p_vals)
                     max_val = p_vals[max_ind]
                     if max_val > best_val:
                         best_val = max_val
-                        best_point = projected_new_points[max_ind]
-                        phi_val = np.max(self.M * (best_val - self.alpha), 0) + q_u
+                        best_point = projected_new_points[max_ind].copy()
+                        phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
                         if phi_val >= self.M * epsilon:
                             break
 
-                    del new_points
+                    del new_points_plus
+                    del new_points_minus
                     del projected_new_points
                     del gradients
                     del hessians
@@ -222,7 +252,6 @@ class NLGCG:
             if np.all(local_distances > 2 * radius):
                 found_points = np.vstack((found_points, point))
         found_values = p_u(found_points)
-
         return (
             best_point,
             found_points,
@@ -257,6 +286,8 @@ class NLGCG:
         return u_plus, raw_Psi
 
     def drop_step(self, u: Measure) -> tuple:
+        if not len(u.coefficients):
+            return u, False
         true_j = self.j(u)
         p_u = self.p(u)
         p_vals = p_u(u.support)
@@ -284,7 +315,8 @@ class NLGCG:
 
     def local_merging_update_radii(self, u: Measure) -> tuple:
         if not len(u.coefficients):
-            return np.array([]), np.array([]), u, []
+            return np.array([]), u, []
+        t = time.time()
         radii = self.compute_radii(u)
         p_u = self.p(u)
         p_norm = lambda x: np.abs(p_u(x))
@@ -311,13 +343,6 @@ class NLGCG:
             u_plus = Measure(support=cluster_points, coefficients=cluster_coefs)
             radii = self.compute_radii(u_plus)
             return u_plus.to_matrix(), u_plus, radii
-
-    # def vectro_to_tuples(
-    #     self, points: np.ndarray, coefs: np.ndarray, direction: np.ndarray
-    # ) -> tuple:
-    #     points_new = points + direction[: -len(coefs)].reshape(points.shape)
-    #     coefs_new = coefs + direction[-len(coefs) :]
-    #     return points_new, coefs_new
 
     def armijo(
         self,
@@ -372,6 +397,7 @@ class NLGCG:
             update_direction = -grad_j_N_z.copy()
             choice = "Gradient"
         parameters_new = self.armijo(parameters, update_direction, grad_j_N_z)
+        parameters_new = self.project_into_domain(parameters_new)
         return parameters_new, choice
 
     def lgcg_step(
@@ -386,12 +412,12 @@ class NLGCG:
         x_k, found_points, found_values, global_valid = self.global_search(
             u, epsilon, q_u, p_u, radius
         )
-        Phi = self.M * max((np.abs(p_u(x_k))[0] - self.alpha), 0) + q_u
+        Phi = self.M * max((np.abs(p_u(x_k.reshape(1, -1)))[0] - self.alpha), 0) + q_u
         if Phi > q_u:
             v = Measure(
                 support=found_points, coefficients=self.M * np.sign(found_values)
             )
-            # v = Measure([x_k], [self.M * np.sign(p_u(x_k)[0])])
+            # v = Measure([x_k], [self.M * np.sign(p_u(x_k.reshape(1,-1))[0])])
         else:
             v = Measure()
         updates = 0
@@ -431,6 +457,8 @@ class NLGCG:
                     condition = jdiff <= expected_decrease
             self.C_raw *= 2
             u_plus = previous_u_plus.copy()
+        logging.info(f"{1.0 - eta:.15E}")
+        logging.info(u_plus.coefficients)
         if not global_valid:
             # We have a global maximum x_k
             epsilon = 0.5 * Phi / self.M
@@ -447,9 +475,12 @@ class NLGCG:
         coefs = parameters[:, 0].flatten()
 
         # Domain test
-        projected_points_new = self.project_into_domain(points_new)
-        projection_distance = np.linalg.norm(points_new - projected_points_new)
-        output_bools.append(projection_distance == 0)
+        if any(points_new[:, 0] == 0):
+            output_bools.append(False)
+        else:
+            projected_points_new = self.project_into_domain(points_new)
+            projection_distance = np.linalg.norm(points_new - projected_points_new)
+            output_bools.append(projection_distance == 0)
 
         # M test
         output_bools.append(np.linalg.norm(coefs_new, ord=1) <= 2 * self.M)
@@ -635,9 +666,10 @@ class NLGCG:
 
             if len(u_gcg.coefficients):
                 u_drop, dropped = self.drop_step(u_gcg)
-                u_plus, finite_psi = self.finite_dimensional_step(
-                    u_drop, self.machine_precision, mode="positive"
-                )
+                # u_plus, finite_psi = self.finite_dimensional_step(
+                #     u_drop, tol, mode="positive"
+                # )
+                u_plus = u_drop.copy()
                 dropped_tot += dropped
             else:
                 u_plus = u_gcg.copy()
@@ -655,6 +687,9 @@ class NLGCG:
                 "============================================================================================="
             )
             k += 1
+
+            if k == 55:
+                break
 
         return (
             u,

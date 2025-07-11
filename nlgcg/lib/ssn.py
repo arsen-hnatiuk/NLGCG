@@ -83,6 +83,7 @@ class SSN:
         theta = tol  # Set initial value for the step length parameter
         Id = np.identity(len(u_0))
         initial_j = self.j(u_0)
+        logging.info(initial_j)
         q = u_0 + self.p(u_0)
         prox_q = self.prox(q, self.alpha)  # The actual iterate
         k = 0
@@ -102,7 +103,7 @@ class SSN:
                     try:
                         direction = np.linalg.solve(left_hand + theta * Id, right_hand)
                     except np.linalg.LinAlgError:
-                        logging.debug(
+                        logging.info(
                             f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {self.Psi(prox_q):.3E} achieved"
                         )
                         return prox_q
@@ -114,7 +115,7 @@ class SSN:
                 prox_q = prox_qnew
                 k += 1
                 if k > 1000:
-                    logging.debug(
+                    logging.info(
                         f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {self.Psi(prox_q):.3E} achieved"
                     )
                     return prox_q
@@ -123,7 +124,7 @@ class SSN:
             k += 1
         tol = last_tol
 
-        logging.debug(
+        logging.info(
             f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
         )
         return prox_q
