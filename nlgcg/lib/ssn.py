@@ -32,6 +32,7 @@ class SSN:
             self.j = lambda u: self.f(u) + self.g(u)
             self.M = M
             self.minimum_iterations = minimum_iterations
+            self.maximum_iterations = 1000
             if mode == "unconstrained":
                 self.Psi = self.Psi_unconstrained
                 self.prox = self.prox_unconstrained
@@ -113,7 +114,7 @@ class SSN:
                 q = qnew
                 prox_q = prox_qnew
                 k += 1
-                if k > 1000:
+                if k > self.maximum_iterations:
                     logging.info(
                         f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {self.Psi(prox_q):.3E} achieved"
                     )

@@ -1,6 +1,7 @@
 import numpy as np
 import logging
 import time
+import jax.numpy as jnp
 import jax
 import jaxlib
 from typing import Callable, Union
@@ -39,6 +40,7 @@ class NLGCG:
         armijo_constant: float = 1e-4,
         newton_p: float = 1e-1,
         descent_constant: float = 1e-6,
+        sigma_test_constant: float = 5e-3,
     ) -> None:
         self.target = target
         self.kernel = kernel
@@ -71,6 +73,7 @@ class NLGCG:
         self.descent_constant = descent_constant  # For Newton step acceptance condition
         self.lazy_sample = int(1e3)
         self.exact_sample = int(1e5)
+        self.sigma_test_constant = sigma_test_constant  # For sigma test in lgcg_step
 
     def project_into_domain(
         self, x: Union[np.ndarray, jaxlib.xla_extension.ArrayImpl]
@@ -153,6 +156,26 @@ class NLGCG:
                     success = True  # Found a desired point
                 else:
                     success = False
+            # valid_indices = np.where(
+            #     np.logical_and(
+            #         grid_vals >= self.alpha,
+            #         grid_vals > best_val * self.dual_variable_goodness,
+            #     )
+            # )[0]
+            # valid_grid = grid[valid_indices]
+            # valid_grid_vals = grid_vals[valid_indices]
+            # order_indices = np.argsort(valid_grid_vals)[::-1]
+            # order_grid = valid_grid[order_indices][:100]
+            # if not len(order_grid):
+            #     found_points = np.array([best_point])
+            # else:
+            #     found_points = np.array([order_grid[0]])
+            # for point in order_grid[1:]:
+            #     local_distances = np.linalg.norm(found_points - point, axis=1)
+            #     if np.all(local_distances > 2 * radius):
+            #         found_points = np.vstack((found_points, point))
+            # logging.info(p_norm(found_points))
+
         else:
             grad_P = self.grad_P(u)
             hess_P = self.hess_P(u)
@@ -235,7 +258,8 @@ class NLGCG:
         valid_indices = np.where(
             np.logical_and(
                 grid_vals >= self.alpha,
-                grid_vals > best_val * self.dual_variable_goodness,
+                grid_vals
+                > self.alpha + (best_val - self.alpha) * self.dual_variable_goodness,
             )
         )[0]
         valid_grid = grid[valid_indices]
@@ -251,11 +275,9 @@ class NLGCG:
             local_distances = np.linalg.norm(found_points - point, axis=1)
             if np.all(local_distances > 2 * radius):
                 found_points = np.vstack((found_points, point))
-        found_values = p_u(found_points)
         return (
             best_point,
             found_points,
-            found_values,
             success,
         )
 
@@ -355,20 +377,32 @@ class NLGCG:
             return parameters.copy()
         sigma = 1
         parameters_new = parameters + (sigma * direction).reshape(parameters.shape)
+        # projected_parameters_new = self.project_into_domain(parameters_new)
         j_N_new = self.j_N(parameters_new.flatten())
-        while j_N_new - j_N_init > sigma * desired_descent:
+        # if jnp.isnan(j_N_new):
+        #     j_N_new = j_N_init + 1
+        while (
+            j_N_new - j_N_init
+            > sigma * desired_descent
+            # or np.linalg.norm(projected_parameters_new - parameters_new) > 0
+        ):
             sigma *= self.beta
             parameters_new = parameters + (sigma * direction).reshape(parameters.shape)
+            # projected_parameters_new = self.project_into_domain(parameters_new)
             j_N_new = self.j_N(parameters_new.flatten())
+            # if jnp.isnan(j_N_new):
+            #     j_N_new = j_N_init + 1
         # logging.info(
-        #     f"Armijo: j_N_new: {j_N_new}, j_N_init: {j_N_init}, desired_descent: {desired_descent}, sigma: {sigma}"
+        #     f"Armijo: j_N_new: {j_N_new}, j_N_init: {j_N_init}, diff: {j_N_new - j_N_init}, desired_descent: {desired_descent}, sigma: {sigma}"
         # )
-        return parameters_new
+        return parameters_new, sigma
 
     def globalized_newton_step(
         self,
         parameters: np.ndarray,
     ) -> tuple:
+        # logging.info("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+        # logging.info(parameters)
         grad_j_N_z = self.grad_j_N(parameters.flatten())
         hess_j_N_z = self.hess_j_N(parameters.flatten())
         try:
@@ -391,13 +425,21 @@ class NLGCG:
             # )
             if not condition or grad_direction < self.machine_precision:
                 raise np.linalg.LinAlgError("Insufficient descent in Newton direction")
-            choice = "Newton"
+            choice = "Newt"
         except np.linalg.LinAlgError:
             update_direction = -grad_j_N_z.copy()
-            choice = "Gradient"
-        parameters_new = self.armijo(parameters, update_direction, grad_j_N_z)
+            choice = "Grad"
+        if any(jnp.isnan(update_direction)):
+            return parameters, "NAN in update direction", 1
+        parameters_new, sigma = self.armijo(parameters, update_direction, grad_j_N_z)
+        # logging.info(update_direction.reshape(parameters.shape))
+        # logging.info(sigma)
+        # logging.info(np.linalg.norm(grad_j_N_z))
+        # logging.info(parameters_new)
         parameters_new = self.project_into_domain(parameters_new)
-        return parameters_new, choice
+        # logging.info(parameters_new)
+        # logging.info("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+        return parameters_new, choice, sigma
 
     def lgcg_step(
         self,
@@ -414,15 +456,14 @@ class NLGCG:
             radius = np.max(radii)
         else:
             radius = self.max_radius
-        x_k, found_points, found_values, global_valid = self.global_search(
+        x_k, found_points, global_valid = self.global_search(
             u, epsilon, q_u, p_u, radius, mode
         )
         Phi = self.M * max((np.abs(p_u(x_k.reshape(1, -1)))[0] - self.alpha), 0) + q_u
         if Phi > q_u:
             v = Measure(
-                support=found_points, coefficients=self.M * np.sign(found_values)
+                support=found_points, coefficients=self.M * np.sign(p_u(found_points))
             )
-            # v = Measure([x_k], [self.M * np.sign(p_u(x_k.reshape(1,-1))[0])])
         else:
             v = Measure()
         updates = 0
@@ -433,11 +474,6 @@ class NLGCG:
             self.C_raw *= 2
             Curv = self.C_raw * self.M**2
             eta = min(1, Phi / Curv)
-            # if eta < 1e-8:
-            #     eta = max(eta, 1e-8)  # Avoid numerical issues with eta = 0
-            #     u_plus = u * (1 - eta) + v * eta
-            #     condition = True
-            #     break
             u_plus = u * (1 - eta) + v * eta
             jdiff = self.j(u_plus) - j_initial
             if Phi <= Curv:
@@ -450,8 +486,6 @@ class NLGCG:
                 condition = jdiff <= expected_decrease
             # if self.C_raw > 1000:
             #     logging.info(f"Expected decrease: {expected_decrease}, jdiff: {jdiff}")
-        # logging.info(f"{1.0 - eta:.15E}")
-        # logging.info(u_plus.coefficients)
         if updates < 2:
             # There has been no increase of the curvature constant, try a smaller value
             while condition and self.C_raw >= self.C_0:
@@ -471,8 +505,6 @@ class NLGCG:
                     condition = jdiff <= expected_decrease
             self.C_raw *= 2
             u_plus = previous_u_plus.copy()
-        # logging.info(f"{1.0 - eta:.15E}")
-        # logging.info(u_plus.coefficients)
         if not global_valid:
             # We have a global maximum x_k
             epsilon = 0.5 * Phi / self.M
@@ -482,6 +514,8 @@ class NLGCG:
         self,
         parameters: np.ndarray,
         parameters_new: np.ndarray,
+        local_M: float,
+        sigma: float,
     ) -> list:
         output_bools = []
         points_new = parameters_new[:, 1:]
@@ -497,7 +531,7 @@ class NLGCG:
             output_bools.append(projection_distance == 0)
 
         # M test
-        output_bools.append(bool(np.linalg.norm(coefs_new, ord=1) <= 2 * self.M))
+        output_bools.append(bool(np.linalg.norm(coefs_new, ord=1) <= local_M))
 
         # Sign test
         if np.all(np.sign(coefs_new) == np.sign(coefs)):
@@ -505,17 +539,24 @@ class NLGCG:
         else:
             output_bools.append(False)
 
-        # Valid step test
+        # Absolute descent test
         j_N_diff = self.j_N(parameters_new.flatten()) - self.j_N(parameters.flatten())
         if j_N_diff >= -self.machine_precision:
             output_bools.append(False)
-            # logging.info(j_N_diff)
         else:
             output_bools.append(True)
 
+        # # Sigma test
+        # if sigma < self.sigma_test_constant:
+        #     output_bools.append(False)
+        # else:
+        #     output_bools.append(True)
+
         return output_bools
 
-    def descent_test(self, parameters: np.ndarray, epsilon: float, radii: list) -> bool:
+    def comparative_descent_test(
+        self, parameters: np.ndarray, epsilon: float, radii: list
+    ) -> bool:
         grad_j_N_z = self.grad_j_N(parameters.flatten())
         grad_j_N_z_matrix = grad_j_N_z.reshape(parameters.shape)
         grad_points_matrix = grad_j_N_z_matrix[:, 1:]
@@ -548,9 +589,13 @@ class NLGCG:
         grads = grad_P(u.support)
         hesses = hess_P(u.support)
         for point_grad, point_hess in zip(grads, hesses):
-            eigenvalue = np.min(np.abs(np.linalg.eigvals(point_hess)))
-            local_radius = 4 * np.linalg.norm(point_grad) / eigenvalue
-            radii.append(min(local_radius, self.max_radius))
+            try:
+                eigenvalue = np.min(np.abs(np.linalg.eigvals(point_hess)))
+                local_radius = 4 * np.linalg.norm(point_grad) / eigenvalue
+                radii.append(min(local_radius, self.max_radius))
+            except np.linalg.LinAlgError:
+                # If the Hessian contains nan, we cannot compute a radius
+                radii.append(self.max_radius)
         # logging.info(f"Radii: {radii}")
         return radii
 
@@ -595,7 +640,9 @@ class NLGCG:
             s = 1
             while len(u_ks.coefficients):
                 # Inner loop
-                parameters_new, newton_choice = self.globalized_newton_step(parameters)
+                parameters_new, newton_choice, sigma = self.globalized_newton_step(
+                    parameters
+                )
                 u_ks_new = Measure(matrix=parameters_new)
 
                 # Monitor statistics
@@ -605,18 +652,22 @@ class NLGCG:
                 objective_values.append(self.j(u_ks))
                 epsilons.append(epsilon_ks)
                 logging.info(
-                    f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, epsilon: {epsilon_ks:.3E}, c_raw: {self.C_raw}, objective: {self.j(u_ks):.6E}"
+                    f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.3E}, sigma: {sigma:.3E}, epsilon: {epsilon_ks:.3E}, objective: {self.j(u_ks):.6E}"
                 )
 
                 # Check validity of the newton step
-                descent_test = self.descent_test(parameters, epsilon_ks, radii)
+                descent_test = self.comparative_descent_test(
+                    parameters, epsilon_ks, radii
+                )
                 if not descent_test:
                     u_ks_gcg, epsilon_ks, global_valid = self.lgcg_step(
                         p_u_ks, u_ks, epsilon_ks, q_u_ks, radii, mode
                     )
                     lgcg_lazy += int(global_valid)
                     lgcg_total += 1
-                    descent_test = self.descent_test(parameters, epsilon_ks, radii)
+                    descent_test = self.comparative_descent_test(
+                        parameters, epsilon_ks, radii
+                    )
                 else:
                     global_valid = "N/A"
                 if 2 * local_M * epsilon_ks <= tol:  # Optimality reached
@@ -629,7 +680,9 @@ class NLGCG:
                     s += 1
                     logging.info(f"Descent test: {descent_test}")
                     break
-                domain_tests = self.domain_tests(parameters, parameters_new)
+                domain_tests = self.domain_tests(
+                    parameters, parameters_new, local_M, sigma
+                )
                 if not all(domain_tests):
                     s += 1
                     logging.info(f"Domain tests: {domain_tests}")
