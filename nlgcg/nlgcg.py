@@ -9,6 +9,8 @@ from lib.default_values import *
 from lib.ssn import SSN
 from lib.measure import Measure
 
+jax.config.update("jax_enable_x64", True)
+
 logging.basicConfig(
     level=logging.DEBUG,
 )
@@ -33,7 +35,6 @@ class NLGCG:
         M: float = 1e6,
         C_0: float = 1,
         dual_variable_goodness: float = 0.5,
-        random_grid_size: int = int(1e4),
         beta: float = 0.5,
         armijo_constant: float = 1e-4,
         newton_p: float = 1e-1,
@@ -63,12 +64,13 @@ class NLGCG:
         self.machine_precision = 1e-12
         self.stop_search = 5
         self.batching_constant = 2e8
-        self.random_grid_size = random_grid_size
         self.dual_variable_goodness = dual_variable_goodness
         self.beta = beta  # For Armijo rule
         self.armijo_constant = armijo_constant  # For Armijo rule
         self.newton_p = 2 + newton_p  # For Newton step acceptance condition
         self.descent_constant = descent_constant  # For Newton step acceptance condition
+        self.lazy_sample = int(1e3)
+        self.exact_sample = int(1e5)
 
     def project_into_domain(
         self, x: Union[np.ndarray, jaxlib.xla_extension.ArrayImpl]
@@ -126,10 +128,9 @@ class NLGCG:
         p_norm = lambda x: np.abs(p_u(x))
 
         if mode == "stochastic":
-            sample_lazy = int(1e3)
-            sample_exact = int(1e4)
-            sample_grid = self.sample_domain(sample_lazy)
-            grid = np.vstack((sample_grid, u.support))
+            grid = self.sample_domain(self.lazy_sample)
+            if len(u.support):
+                grid = np.vstack((grid, u.support))
             grid_vals = p_norm(grid)
             max_ind = np.argmax(grid_vals)
             best_val = grid_vals[max_ind]
@@ -138,10 +139,9 @@ class NLGCG:
             if phi_val >= self.M * epsilon:
                 success = True  # Found a desired point
             else:
-                sample_grid = self.sample_domain(sample_exact)
                 lazy_grid = grid.copy()
                 lazy_grid_vals = grid_vals.copy()
-                grid = np.vstack((sample_grid, u.support))
+                grid = self.sample_domain(self.exact_sample)
                 grid_vals = p_norm(grid)
                 grid = np.vstack((grid, lazy_grid))
                 grid_vals = np.hstack((grid_vals, lazy_grid_vals))
@@ -316,7 +316,6 @@ class NLGCG:
     def local_merging_update_radii(self, u: Measure) -> tuple:
         if not len(u.coefficients):
             return np.array([]), u, []
-        t = time.time()
         radii = self.compute_radii(u)
         p_u = self.p(u)
         p_norm = lambda x: np.abs(p_u(x))
@@ -401,7 +400,13 @@ class NLGCG:
         return parameters_new, choice
 
     def lgcg_step(
-        self, p_u: Callable, u: Measure, epsilon: float, q_u: float, radii: np.ndarray
+        self,
+        p_u: Callable,
+        u: Measure,
+        epsilon: float,
+        q_u: float,
+        radii: np.ndarray,
+        mode: str = "deterministic",
     ) -> tuple:
         j_initial = self.j(u)
         condition = False
@@ -410,7 +415,7 @@ class NLGCG:
         else:
             radius = self.max_radius
         x_k, found_points, found_values, global_valid = self.global_search(
-            u, epsilon, q_u, p_u, radius
+            u, epsilon, q_u, p_u, radius, mode
         )
         Phi = self.M * max((np.abs(p_u(x_k.reshape(1, -1)))[0] - self.alpha), 0) + q_u
         if Phi > q_u:
@@ -428,6 +433,11 @@ class NLGCG:
             self.C_raw *= 2
             Curv = self.C_raw * self.M**2
             eta = min(1, Phi / Curv)
+            # if eta < 1e-8:
+            #     eta = max(eta, 1e-8)  # Avoid numerical issues with eta = 0
+            #     u_plus = u * (1 - eta) + v * eta
+            #     condition = True
+            #     break
             u_plus = u * (1 - eta) + v * eta
             jdiff = self.j(u_plus) - j_initial
             if Phi <= Curv:
@@ -438,6 +448,10 @@ class NLGCG:
                 condition = True
             else:
                 condition = jdiff <= expected_decrease
+            # if self.C_raw > 1000:
+            #     logging.info(f"Expected decrease: {expected_decrease}, jdiff: {jdiff}")
+        # logging.info(f"{1.0 - eta:.15E}")
+        # logging.info(u_plus.coefficients)
         if updates < 2:
             # There has been no increase of the curvature constant, try a smaller value
             while condition and self.C_raw >= self.C_0:
@@ -457,8 +471,8 @@ class NLGCG:
                     condition = jdiff <= expected_decrease
             self.C_raw *= 2
             u_plus = previous_u_plus.copy()
-        logging.info(f"{1.0 - eta:.15E}")
-        logging.info(u_plus.coefficients)
+        # logging.info(f"{1.0 - eta:.15E}")
+        # logging.info(u_plus.coefficients)
         if not global_valid:
             # We have a global maximum x_k
             epsilon = 0.5 * Phi / self.M
@@ -483,7 +497,7 @@ class NLGCG:
             output_bools.append(projection_distance == 0)
 
         # M test
-        output_bools.append(np.linalg.norm(coefs_new, ord=1) <= 2 * self.M)
+        output_bools.append(bool(np.linalg.norm(coefs_new, ord=1) <= 2 * self.M))
 
         # Sign test
         if np.all(np.sign(coefs_new) == np.sign(coefs)):
@@ -546,6 +560,7 @@ class NLGCG:
         max_radius: float,
         drop_frequency: int = 5,
         u_0: Measure = Measure(),
+        mode: str = "deterministic",
     ) -> tuple:
         self.max_radius = max_radius
         self.M = self.M_0
@@ -597,7 +612,7 @@ class NLGCG:
                 descent_test = self.descent_test(parameters, epsilon_ks, radii)
                 if not descent_test:
                     u_ks_gcg, epsilon_ks, global_valid = self.lgcg_step(
-                        p_u_ks, u_ks, epsilon_ks, q_u_ks, radii
+                        p_u_ks, u_ks, epsilon_ks, q_u_ks, radii, mode
                     )
                     lgcg_lazy += int(global_valid)
                     lgcg_total += 1
@@ -660,16 +675,17 @@ class NLGCG:
             p_u = self.p(u)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
 
-            u_gcg, epsilon, global_valid = self.lgcg_step(p_u, u, epsilon, q_u, radii)
+            u_gcg, epsilon, global_valid = self.lgcg_step(
+                p_u, u, epsilon, q_u, radii, mode
+            )
             lgcg_lazy += int(global_valid)
             lgcg_total += 1
 
             if len(u_gcg.coefficients):
                 u_drop, dropped = self.drop_step(u_gcg)
-                # u_plus, finite_psi = self.finite_dimensional_step(
-                #     u_drop, tol, mode="positive"
-                # )
-                u_plus = u_drop.copy()
+                u_plus, finite_psi = self.finite_dimensional_step(
+                    u_drop, self.machine_precision, mode="positive"
+                )
                 dropped_tot += dropped
             else:
                 u_plus = u_gcg.copy()
@@ -681,15 +697,15 @@ class NLGCG:
             objective_values.append(self.j(u))
             epsilons.append(epsilon)
             logging.info(
-                f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, c_raw: {self.C_raw}, objective: {self.j(u):.6E}"
+                f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, c_raw: {self.C_raw}, objective: {self.j(u):.15E}"
             )
             logging.info(
                 "============================================================================================="
             )
             k += 1
 
-            if k == 55:
-                break
+            # if k == 55:
+            #     break
 
         return (
             u,

@@ -83,7 +83,6 @@ class SSN:
         theta = tol  # Set initial value for the step length parameter
         Id = np.identity(len(u_0))
         initial_j = self.j(u_0)
-        logging.info(initial_j)
         q = u_0 + self.p(u_0)
         prox_q = self.prox(q, self.alpha)  # The actual iterate
         k = 0
