@@ -17,8 +17,8 @@ class SSN:
         target: np.ndarray,
         M: float,
         minimum_iterations: int = 0,
-        mode: str = "unconstrained",
-        # mode: "unconstrained" for unconstrained, else for positive solutions
+        mode: str = "unconstrained",  # "unconstrained" for unconstrained, else for positive solutions
+        maximum_iterations: int = 100,
     ) -> None:
         self.K = K
         if all(self.K.shape):
@@ -32,7 +32,7 @@ class SSN:
             self.j = lambda u: self.f(u) + self.g(u)
             self.M = M
             self.minimum_iterations = minimum_iterations
-            self.maximum_iterations = 1000
+            self.maximum_iterations = maximum_iterations
             if mode == "unconstrained":
                 self.Psi = self.Psi_unconstrained
                 self.prox = self.prox_unconstrained
@@ -46,14 +46,15 @@ class SSN:
         # sup_v <p(u),v-u>+g(u)-g(v)
         p = self.p(u)
         constant_part = -np.matmul(p, u) + self.g(u)
-        variable_part = max(0, self.M * (np.max(np.absolute(p)) - self.alpha))
+        variable_part = self.M * max(0, np.max(np.absolute(p)) - self.alpha)
         return constant_part + variable_part
 
     def Psi_positive(self, u: np.ndarray) -> np.ndarray:
         # sup_v <p(u),v-u>+g(u)-g(v)
         p = self.p(u)
         constant_part = -np.matmul(p, u) + self.g(u)
-        variable_part = max(0, self.M * (np.max(p) - self.alpha))
+        variable_part = self.M * max(0, np.max(p) - self.alpha)
+        return max(0, np.max(p) - self.alpha)
         return constant_part + variable_part
 
     def prox_unconstrained(self, q: np.ndarray, alpha: float) -> np.ndarray:

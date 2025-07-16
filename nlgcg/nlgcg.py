@@ -379,8 +379,8 @@ class NLGCG:
         parameters_new = parameters + (sigma * direction).reshape(parameters.shape)
         # projected_parameters_new = self.project_into_domain(parameters_new)
         j_N_new = self.j_N(parameters_new.flatten())
-        # if jnp.isnan(j_N_new):
-        #     j_N_new = j_N_init + 1
+        if jnp.isnan(j_N_new):
+            j_N_new = j_N_init + 1
         while (
             j_N_new - j_N_init
             > sigma * desired_descent
@@ -390,8 +390,8 @@ class NLGCG:
             parameters_new = parameters + (sigma * direction).reshape(parameters.shape)
             # projected_parameters_new = self.project_into_domain(parameters_new)
             j_N_new = self.j_N(parameters_new.flatten())
-            # if jnp.isnan(j_N_new):
-            #     j_N_new = j_N_init + 1
+            if jnp.isnan(j_N_new):
+                j_N_new = j_N_init + 1
         # logging.info(
         #     f"Armijo: j_N_new: {j_N_new}, j_N_init: {j_N_init}, diff: {j_N_new - j_N_init}, desired_descent: {desired_descent}, sigma: {sigma}"
         # )
@@ -401,10 +401,12 @@ class NLGCG:
         self,
         parameters: np.ndarray,
     ) -> tuple:
-        # logging.info("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
-        # logging.info(parameters)
+        logging.info("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+        logging.info(parameters)
         grad_j_N_z = self.grad_j_N(parameters.flatten())
         hess_j_N_z = self.hess_j_N(parameters.flatten())
+        logging.info(hess_j_N_z)
+        logging.info(np.linalg.eigvals(hess_j_N_z))
         try:
             update_direction = np.linalg.solve(hess_j_N_z, -grad_j_N_z)
             update_norm = np.linalg.norm(update_direction)
@@ -434,11 +436,14 @@ class NLGCG:
         parameters_new, sigma = self.armijo(parameters, update_direction, grad_j_N_z)
         # logging.info(update_direction.reshape(parameters.shape))
         # logging.info(sigma)
-        # logging.info(np.linalg.norm(grad_j_N_z))
+        # logging.info(grad_j_N_z.reshape(parameters.shape))
         # logging.info(parameters_new)
         parameters_new = self.project_into_domain(parameters_new)
         # logging.info(parameters_new)
-        # logging.info("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+        # logging.info(
+        #     f"new_val: {self.j_N(parameters_new.flatten())}, old_val: {self.j_N(parameters.flatten())}"
+        # )
+        logging.info("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
         return parameters_new, choice, sigma
 
     def lgcg_step(
@@ -541,8 +546,9 @@ class NLGCG:
 
         # Absolute descent test
         j_N_diff = self.j_N(parameters_new.flatten()) - self.j_N(parameters.flatten())
-        if j_N_diff >= -self.machine_precision:
+        if j_N_diff >= self.machine_precision:
             output_bools.append(False)
+            # logging.info(j_N_diff)
         else:
             output_bools.append(True)
 
@@ -724,6 +730,8 @@ class NLGCG:
             iterate_values = [self.j(iterate) for iterate in all_iterates]
             choice_index = np.argmin(iterate_values)
             u = all_iterates[choice_index].copy()
+            # if k == 20:
+            #     return self.hess_j_N(u.to_matrix().flatten())
 
             p_u = self.p(u)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
@@ -756,9 +764,6 @@ class NLGCG:
                 "============================================================================================="
             )
             k += 1
-
-            # if k == 55:
-            #     break
 
         return (
             u,
