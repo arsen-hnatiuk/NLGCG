@@ -54,7 +54,7 @@ class SSN:
         p = self.p(u)
         constant_part = -np.matmul(p, u) + self.g(u)
         variable_part = self.M * max(0, np.max(p) - self.alpha)
-        return max(0, np.max(p) - self.alpha)
+        # return max(0, np.max(p) - self.alpha)
         return constant_part + variable_part
 
     def prox_unconstrained(self, q: np.ndarray, alpha: float) -> np.ndarray:
