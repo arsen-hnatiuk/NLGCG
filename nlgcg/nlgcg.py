@@ -53,8 +53,9 @@ class NLGCG:
         self.j = j
         self.j_N = j_N
         self.u_0 = Measure()
+        self.c_0 = 0
         self.M_0 = min(
-            M, self.j(self.u_0) / self.alpha
+            M, self.j(self.u_0, self.c_0) / self.alpha
         )  # Bound on the norm of iterates
         self.M = self.M_0
         self.C_0 = C_0
@@ -120,6 +121,7 @@ class NLGCG:
     def global_search(
         self,
         u: Measure,
+        c: float,
         epsilon: float,
         q_u: float,
         p_u: Callable,
@@ -155,8 +157,8 @@ class NLGCG:
                 else:
                     success = False
         else:
-            grad_P = self.grad_P(u)
-            hess_P = self.hess_P(u)
+            grad_P = self.grad_P(u, c)
+            hess_P = self.hess_P(u, c)
             grid = self.get_grid(u)
             grid_vals = p_norm(grid)
             max_ind = np.argmax(grid_vals)
@@ -260,36 +262,48 @@ class NLGCG:
         )
 
     def finite_dimensional_step(
-        self, u: Measure, Psi: float, mode: str = "unconstrained"
+        self, u: Measure, c: float, Psi: float, mode: str = "unconstrained"
     ) -> tuple:
-        if not len(u.coefficients):
-            return u, Psi * 2
-        K_support = self.kernel(u.support).T
+        K_support = np.ones((1, len(self.target)))
+        coefs = np.array([c])
+        # if not len(u.coefficients):
+        # return u, Psi * 2
+        if len(u.coefficients):
+            K_support = np.hstack((self.kernel(u.support).T, K_support))
+            coefs = np.hstack((u.coefficients, coefs))
         if mode == "positive":
             signs = np.sign(u.coefficients)
+            signs[signs == 0] = 1
             K_support = np.multiply(K_support, signs)
-            u_0 = np.abs(u.coefficients)
+            # u_0 = np.abs(u.coefficients
+            u_0 = np.abs(coefs)
         else:
-            u_0 = u.coefficients.copy()
+            u_0 = coefs.copy()
+            # u_0 = u.coefficients.copy()
         ssn = SSN(
             K=K_support, alpha=self.alpha, target=self.target, M=self.M, mode=mode
         )
-        u_raw = ssn.solve(tol=Psi, u_0=u_0)
-        raw_Psi = ssn.Psi(u_raw)
+        ssn_raw = ssn.solve(tol=Psi, u_0=u_0)
+        raw_Psi = ssn.Psi(ssn_raw)
         if mode == "positive":
-            u_raw = u_raw * signs
+            ssn_raw = ssn_raw * signs
+        u_raw = ssn_raw[:-1]
+        c_raw = ssn_raw[-1]
         # Reconstruct u
-        u_plus = Measure(
-            support=u.support[u_raw != 0].copy(),
-            coefficients=u_raw[u_raw != 0].copy(),
-        )
-        return u_plus, raw_Psi
+        if len(u_raw):
+            u_plus = Measure(
+                support=u.support[u_raw != 0].copy(),
+                coefficients=u_raw[u_raw != 0].copy(),
+            )
+        else:
+            u_plus = Measure()
+        return u_plus, c_raw, raw_Psi
 
-    def drop_step(self, u: Measure) -> tuple:
+    def drop_step(self, u: Measure, c: float) -> tuple:
         if not len(u.coefficients):
             return u, False
-        true_j = self.j(u)
-        p_u = self.p(u)
+        true_j = self.j(u, c)
+        p_u = self.p(u, c)
         p_vals = p_u(u.support)
         vals_signs = np.sign(p_vals)
         measure_signs = np.sign(u.coefficients)
@@ -305,7 +319,7 @@ class NLGCG:
             new_support.append(point)
             new_coefficients.append(coef)
             tentative_u = Measure(support=new_support, coefficients=new_coefficients)
-            tentative_j = self.j(tentative_u)
+            tentative_j = self.j(tentative_u, c)
             if tentative_j <= true_j:
                 if len(new_support) == len(u.support):
                     return u, False
@@ -313,11 +327,11 @@ class NLGCG:
                     return tentative_u, True
         return u, False
 
-    def local_merging_update_radii(self, u: Measure) -> tuple:
+    def local_merging_update_radii(self, u: Measure, c: float) -> tuple:
         if not len(u.coefficients):
             return np.array([]), u, []
-        radii = self.compute_radii(u)
-        p_u = self.p(u)
+        radii = self.compute_radii(u, c)
+        p_u = self.p(u, c)
         p_norm = lambda x: np.abs(p_u(x))
         sorting_indices = np.argsort(p_norm(u.support))[::-1]
         full_set = u.support.copy()[sorting_indices]
@@ -340,44 +354,41 @@ class NLGCG:
             return u.to_matrix(), u, radii
         else:
             u_plus = Measure(support=cluster_points, coefficients=cluster_coefs)
-            radii = self.compute_radii(u_plus)
+            radii = self.compute_radii(u_plus, c)
             return u_plus.to_matrix(), u_plus, radii
 
     def armijo(
         self,
-        parameters: np.ndarray,
+        full_parameters: np.ndarray,
         direction: np.ndarray,
         gradient: np.ndarray,
         choice: str,
     ) -> tuple:
         sigma = 1
-        grad_norm = np.linalg.norm(gradient)
-        j_N_init = self.j_N(parameters.flatten())
+        j_N_init = self.j_N(full_parameters)
         desired_descent = self.armijo_constant * gradient @ direction
         if choice == "Grad" and desired_descent > -self.machine_precision:
-            return parameters.copy(), -1
-        parameters_new = parameters + (sigma * direction).reshape(parameters.shape)
-        j_N_new = self.j_N(parameters_new.flatten())
+            return full_parameters.copy(), -1
+        full_parameters_new = full_parameters + (sigma * direction)
+        j_N_new = self.j_N(full_parameters_new)
         if jnp.isnan(j_N_new):
             j_N_new = j_N_init + 1
         while j_N_new - j_N_init > sigma * desired_descent:
             if choice == "Grad" and sigma * desired_descent > -self.machine_precision:
-                return parameters.copy(), -1
+                return full_parameters.copy(), -1
             elif sigma < self.machine_precision:
-                return parameters.copy(), -1
+                return full_parameters.copy(), -1
             sigma *= self.beta
-            parameters_new = parameters + (sigma * direction).reshape(parameters.shape)
-            j_N_new = self.j_N(parameters_new.flatten())
+            full_parameters_new = full_parameters + (sigma * direction)
+            j_N_new = self.j_N(full_parameters_new)
             if jnp.isnan(j_N_new):
                 j_N_new = j_N_init + 1
-        return parameters_new, sigma
+        return full_parameters_new, sigma
 
-    def globalized_newton_step(
-        self,
-        parameters: np.ndarray,
-    ) -> tuple:
-        grad_j_N_z = self.grad_j_N(parameters.flatten())
-        hess_j_N_z = self.hess_j_N(parameters.flatten())
+    def globalized_newton_step(self, parameters: np.ndarray, c: float) -> tuple:
+        full_parameters = np.hstack((parameters.flatten(), np.array([c])))
+        grad_j_N_z = self.grad_j_N(full_parameters)
+        hess_j_N_z = self.hess_j_N(full_parameters)
         try:
             update_direction = np.linalg.solve(hess_j_N_z, -grad_j_N_z)
             update_norm = np.linalg.norm(update_direction)
@@ -392,30 +403,34 @@ class NLGCG:
             update_direction = -grad_j_N_z.copy()
             choice = "Grad"
         if any(jnp.isnan(update_direction)):
-            return parameters, "NAN in update direction", 1
-        parameters_new, sigma = self.armijo(
-            parameters, update_direction, grad_j_N_z, choice
+            return parameters, c, "NAN in update direction", 1
+        full_parameters_new, sigma = self.armijo(
+            full_parameters, update_direction, grad_j_N_z, choice
         )
-        parameters_new = self.project_into_domain(parameters_new)
-        return parameters_new, choice, sigma
+        c_new = full_parameters_new[-1]
+        parameters_new = self.project_into_domain(
+            full_parameters_new[:-1].reshape(parameters.shape)
+        )
+        return parameters_new, c_new, choice, sigma
 
     def lgcg_step(
         self,
         p_u: Callable,
         u: Measure,
+        c: float,
         epsilon: float,
         q_u: float,
         radii: np.ndarray,
         mode: str = "deterministic",
     ) -> tuple:
-        j_initial = self.j(u)
+        j_initial = self.j(u, c)
         condition = False
         if len(radii):
             radius = np.max(radii)
         else:
             radius = self.max_radius
         x_k, found_points, global_valid = self.global_search(
-            u, epsilon, q_u, p_u, radius, mode
+            u, c, epsilon, q_u, p_u, radius, mode
         )
         Phi = self.M * max((np.abs(p_u(x_k.reshape(1, -1)))[0] - self.alpha), 0) + q_u
         if Phi > q_u:
@@ -433,7 +448,7 @@ class NLGCG:
             Curv = self.C_raw * self.M**2
             eta = min(1, Phi / Curv)
             u_plus = u * (1 - eta) + v * eta
-            jdiff = self.j(u_plus) - j_initial
+            jdiff = self.j(u_plus, c) - j_initial
             if Phi <= Curv:
                 expected_decrease = -0.5 * Phi**2 / Curv
             else:
@@ -450,7 +465,7 @@ class NLGCG:
                 Curv = self.C_raw * self.M**2
                 eta = min(1, Phi / Curv)
                 u_plus = u * (1 - eta) + v * eta
-                jdiff = self.j(u_plus) - j_initial
+                jdiff = self.j(u_plus, c) - j_initial
                 if Phi <= Curv:
                     expected_decrease = -0.5 * Phi**2 / Curv
                 else:
@@ -469,7 +484,9 @@ class NLGCG:
     def domain_and_descent_tests(
         self,
         parameters: np.ndarray,
+        c: float,
         parameters_new: np.ndarray,
+        c_new: float,
         local_M: float,
         choice: str,
     ) -> list:
@@ -496,7 +513,9 @@ class NLGCG:
             output_bools.append(False)
 
         # Absolute descent test
-        j_N_diff = self.j_N(parameters_new.flatten()) - self.j_N(parameters.flatten())
+        full_parameters = np.hstack((parameters.flatten(), np.array([c])))
+        full_parameters_new = np.hstack((parameters_new.flatten(), np.array([c_new])))
+        j_N_diff = self.j_N(full_parameters_new) - self.j_N(full_parameters)
         if choice == "Grad" and j_N_diff >= -self.machine_precision:
             output_bools.append(False)
         elif choice == "Newt" and j_N_diff >= 0:
@@ -507,11 +526,13 @@ class NLGCG:
         return output_bools
 
     def comparative_descent_test(
-        self, parameters: np.ndarray, epsilon: float, radii: list
+        self, parameters: np.ndarray, c: float, epsilon: float, radii: list
     ) -> tuple:
-        grad_j_N_z = self.grad_j_N(parameters.flatten())
+        full_parameters = np.hstack((parameters.flatten(), np.array([c])))
+        grad_j_N_z = self.grad_j_N(full_parameters)
+        constant_part = np.abs(grad_j_N_z[-1] * c)
         grad_norm = np.linalg.norm(grad_j_N_z)
-        grad_j_N_z_matrix = grad_j_N_z.reshape(parameters.shape)
+        grad_j_N_z_matrix = grad_j_N_z[:-1].reshape(parameters.shape)
         grad_points_matrix = grad_j_N_z_matrix[:, 1:]
         points_part = 0
         for i, radius in enumerate(radii):
@@ -522,6 +543,7 @@ class NLGCG:
             points_part
             + self.M * abs(min(0, np.min(np.multiply(grad_coefs, np.sign(coefs)))))
             + grad_coefs @ coefs
+            + constant_part
         )
         if epsilon <= self.C_raw * self.M:
             ineq = gap >= 0.5 * epsilon**2 / self.C_raw
@@ -529,12 +551,12 @@ class NLGCG:
             ineq = gap >= (2 * self.M * epsilon - self.C_raw * self.M**2) / 2
         return ineq, grad_norm
 
-    def compute_radii(self, u: Measure) -> list:
+    def compute_radii(self, u: Measure, c: float) -> list:
         radii = []
         if not len(u.coefficients):
             return radii
-        grad_P = self.grad_P(u)
-        hess_P = self.hess_P(u)
+        grad_P = self.grad_P(u, c)
+        hess_P = self.hess_P(u, c)
         grads = grad_P(u.support)
         hesses = hess_P(u.support)
         for point_grad, point_hess in zip(grads, hesses):
@@ -553,12 +575,13 @@ class NLGCG:
         max_radius: float,
         drop_frequency: int = 5,
         u_0: Measure = Measure(),
+        c_0: float = 0,
         mode: str = "deterministic",
     ) -> tuple:
         self.max_radius = max_radius
         self.M = self.M_0
         self.C_raw = self.C_0
-        epsilon = 0.5 * self.j(u_0) / self.M
+        epsilon = 0.5 * self.j(u_0, c_0) / self.M
         k = 0
         dropped = False
         optimal = False
@@ -567,50 +590,54 @@ class NLGCG:
         times = [time.time() - initial_time]
         supports = [0]
         inner_loop = [0]
-        objective_values = [self.j(u_0)]
+        objective_values = [self.j(u_0, c_0)]
         epsilons = [epsilon]
         lgcg_lazy = 0
         lgcg_total = 0
 
         u_plus = u_0.copy()
+        c_plus = c_0
         while 2 * self.M * epsilon > tol:
             global_valid = "N/A"
 
             if len(u_plus.coefficients):
-                u_drop, dropped = self.drop_step(u_plus)
-                u_coef, finite_psi = self.finite_dimensional_step(
-                    u_drop, self.machine_precision, mode="positive"
-                )
-                dropped_tot += dropped
+                u_drop, dropped = self.drop_step(u_plus, c_plus)
             else:
-                u_coef = u_plus.copy()
-            self.M = self.j(u_coef) / self.alpha
+                u_drop = u_plus.copy()
+            u_coef, c_coef, finite_psi = self.finite_dimensional_step(
+                u_drop, c_plus, self.machine_precision, mode="positive"
+            )
+            dropped_tot += dropped
+            self.M = self.j(u_coef, c_coef) / self.alpha
 
-            parameters, u_ks, radii = self.local_merging_update_radii(u_coef)
-            local_M = self.j(u_ks) / self.alpha
-            epsilon_ks = epsilon + 0.5 * (self.j(u_ks) - self.j(u_coef)) / self.M
-            p_u_ks = self.p(u_ks)
+            parameters, u_ks, radii = self.local_merging_update_radii(u_coef, c_coef)
+            c_ks = c_coef
+            local_M = self.j(u_ks, c_ks) / self.alpha
+            epsilon_ks = (
+                epsilon + 0.5 * (self.j(u_ks, c_ks) - self.j(u_coef, c_coef)) / self.M
+            )
+            p_u_ks = self.p(u_ks, c_ks)
             q_u_ks = self.g(u_ks.coefficients) - u_ks.duality_pairing(p_u_ks)
-            u_ks_gcg = u_ks.copy()
-            u_ks_new = u_ks.copy()
-            u_lm = u_ks.copy()
+            u_ks_gcg, c_ks_gcg = u_ks.copy(), c_ks
+            u_ks_new, c_ks_new = u_ks.copy(), c_ks
+            u_lm, c_lm = u_ks.copy(), c_ks
 
             s = 1
-            while len(u_ks.coefficients):
+            while True:  # len(u_ks.coefficients):
                 # Inner loop
 
                 # Check optimality and comparative descent
                 descent_test, grad_norm = self.comparative_descent_test(
-                    parameters, epsilon_ks, radii
+                    parameters, c_ks, epsilon_ks, radii
                 )
                 if not descent_test:
                     u_ks_gcg, epsilon_ks, global_valid = self.lgcg_step(
-                        p_u_ks, u_ks, epsilon_ks, q_u_ks, radii, mode
+                        p_u_ks, u_ks, c_ks, epsilon_ks, q_u_ks, radii, mode
                     )
                     lgcg_lazy += int(global_valid)
                     lgcg_total += 1
                     descent_test, grad_norm = self.comparative_descent_test(
-                        parameters, epsilon_ks, radii
+                        parameters, c_ks, epsilon_ks, radii
                     )
                 else:
                     global_valid = "N/A"
@@ -618,10 +645,10 @@ class NLGCG:
                     times.append(time.time() - initial_time)
                     supports.append(len(u_ks.support))
                     inner_loop.append(1)
-                    objective_values.append(self.j(u_ks))
+                    objective_values.append(self.j(u_ks, c_ks))
                     epsilons.append(epsilon_ks)
                     logging.info(
-                        f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(parameters.flatten()):.12E}"
+                        f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
                     )
                     logging.info(f"Descent test: {descent_test}")
                     break
@@ -634,50 +661,55 @@ class NLGCG:
                     optimal = False
 
                 # Newton step
-                parameters_new, newton_choice, sigma = self.globalized_newton_step(
-                    parameters
+                parameters_new, c_ks_new, newton_choice, sigma = (
+                    self.globalized_newton_step(parameters, c_ks)
                 )
                 u_ks_new = Measure(matrix=parameters_new)
 
                 # Check validity of the newton step
                 domain_tests = self.domain_and_descent_tests(
-                    parameters, parameters_new, local_M, newton_choice
+                    parameters, c_ks, parameters_new, c_ks_new, local_M, newton_choice
                 )
                 if not all(domain_tests):
                     times.append(time.time() - initial_time)
                     supports.append(len(u_ks_new.support))
                     inner_loop.append(1)
-                    objective_values.append(self.j(u_ks_new))
+                    objective_values.append(self.j(u_ks_new, c_ks_new))
                     epsilons.append(epsilon_ks)
                     logging.info(
-                        f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks_new.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(parameters_new.flatten()):.12E}"
+                        f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks_new.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters_new.flatten(), np.array([c_ks_new])))):.12E}"
                     )
                     logging.info(f"Domain tests: {domain_tests}")
                     break
 
                 # Perform drop and local merging
                 if s % drop_frequency == 0:
-                    u_ks_drop, dropped = self.drop_step(u_ks_new)
+                    u_ks_drop, dropped = self.drop_step(u_ks_new, c_ks_new)
                     dropped_tot += dropped
-                    parameters, u_ks, radii = self.local_merging_update_radii(u_ks_drop)
+                    parameters, u_ks, radii = self.local_merging_update_radii(
+                        u_ks_drop, c_ks_new
+                    )
+                    c_ks = c_ks_new
                     epsilon_ks = (
-                        epsilon_ks + 0.5 * (self.j(u_ks) - self.j(u_ks_drop)) / self.M
+                        epsilon_ks
+                        + 0.5 * (self.j(u_ks, c_ks) - self.j(u_ks_drop, c_ks)) / self.M
                     )
                 else:
                     u_ks = u_ks_new.copy()
+                    c_ks = c_ks_new
                     parameters = u_ks.to_matrix()
-                local_M = self.j(u_ks) / self.alpha
-                p_u_ks = self.p(u_ks)
+                local_M = self.j(u_ks, c_ks) / self.alpha
+                p_u_ks = self.p(u_ks, c_ks)
                 q_u_ks = self.g(u_ks.coefficients) - u_ks.duality_pairing(p_u_ks)
 
                 # Monitor statistics
                 times.append(time.time() - initial_time)
                 supports.append(len(u_ks.support))
                 inner_loop.append(1)
-                objective_values.append(self.j(u_ks))
+                objective_values.append(self.j(u_ks, c_ks))
                 epsilons.append(epsilon_ks)
                 logging.info(
-                    f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(parameters.flatten()):.12E}"
+                    f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
                 )
                 s += 1
                 if s == 100:
@@ -688,13 +720,14 @@ class NLGCG:
 
             if optimal:
                 u = u_ks.copy()
+                c = c_ks
                 times.append(time.time() - initial_time)
                 supports.append(len(u.support))
                 inner_loop.append(0)
-                objective_values.append(self.j(u))
+                objective_values.append(self.j(u, c))
                 epsilons.append(epsilon_ks)
                 logging.info(
-                    f"{k} optimal: support: {len(u.support)}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, grad_norm: {grad_norm:.2E} c_raw: {self.C_raw}, objective: {self.j(u):.12E}"
+                    f"{k} optimal: support: {len(u.support)}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, grad_norm: {grad_norm:.2E} c_raw: {self.C_raw}, objective: {self.j(u, c):.12E}"
                 )
                 logging.info(
                     "============================================================================================="
@@ -702,20 +735,20 @@ class NLGCG:
                 break
 
             all_iterates = [
-                u_ks,
-                u_ks_new,
-                u_ks_gcg,
-                u_coef,
-                u_lm,
+                (u_ks, c_ks),
+                (u_ks_new, c_ks_new),
+                (u_ks_gcg, c_ks_gcg),
+                (u_coef, c_coef),
+                (u_lm, c_lm),
             ]
-            iterate_values = [self.j(iterate) for iterate in all_iterates]
+            iterate_values = [self.j(*iterate) for iterate in all_iterates]
             choice_index = np.argmin(iterate_values)
-            u = all_iterates[choice_index].copy()
-            p_u = self.p(u)
+            u, c = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
+            p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
 
             u_plus, epsilon, global_valid = self.lgcg_step(
-                p_u, u, epsilon, q_u, radii, mode
+                p_u, u, c, epsilon, q_u, radii, mode
             )
             lgcg_lazy += int(global_valid)
             lgcg_total += 1
@@ -723,10 +756,10 @@ class NLGCG:
             times.append(time.time() - initial_time)
             supports.append(len(u.support))
             inner_loop.append(0)
-            objective_values.append(self.j(u))
+            objective_values.append(self.j(u, c))
             epsilons.append(epsilon)
             logging.info(
-                f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {2*self.M*epsilon:.3E}, c_raw: {self.C_raw}, objective: {self.j(u):.12E}"
+                f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {2*self.M*epsilon:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.12E}"
             )
             logging.info(
                 "============================================================================================="
@@ -735,6 +768,7 @@ class NLGCG:
 
         return (
             u,
+            c,
             times,
             supports,
             inner_loop,
