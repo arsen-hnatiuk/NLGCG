@@ -23,6 +23,9 @@ class NLGCG:
         target: np.ndarray,
         kernel: Callable,
         g: Callable,  # Penalty function
+        f: Callable,  # Diligence function
+        grad_f: Callable,
+        hess_f: Callable,
         j: Callable,  # Objective
         j_N: Callable,  # parameterized objective
         p: Callable,  # Dual variable
@@ -48,14 +51,17 @@ class NLGCG:
         self.hess_P = hess_P
         self.alpha = alpha
         self.g = g
+        self.f = f
+        self.grad_f = grad_f
+        self.hess_f = hess_f
         self.Omega = Omega  # Example [[0,1],[1,2]] for [0,1]x[1,2]
         self.max_radius = 1
         self.j = j
         self.j_N = j_N
         self.u_0 = Measure()
         self.c_0 = 0
-        self.M_0 = min(
-            M, self.j(self.u_0, self.c_0) / self.alpha
+        self.M_0 = float(
+            min(M, self.j(self.u_0, self.c_0) / self.alpha)
         )  # Bound on the norm of iterates
         self.M = self.M_0
         self.C_0 = C_0
@@ -264,7 +270,7 @@ class NLGCG:
     def finite_dimensional_step(
         self, u: Measure, c: float, Psi: float, mode: str = "unconstrained"
     ) -> tuple:
-        K_support = np.ones((1, len(self.target)))
+        K_support = np.ones((len(self.target), 1))
         coefs = np.array([c])
         # if not len(u.coefficients):
         # return u, Psi * 2
@@ -272,7 +278,7 @@ class NLGCG:
             K_support = np.hstack((self.kernel(u.support).T, K_support))
             coefs = np.hstack((u.coefficients, coefs))
         if mode == "positive":
-            signs = np.sign(u.coefficients)
+            signs = np.sign(coefs)
             signs[signs == 0] = 1
             K_support = np.multiply(K_support, signs)
             # u_0 = np.abs(u.coefficients
@@ -281,7 +287,15 @@ class NLGCG:
             u_0 = coefs.copy()
             # u_0 = u.coefficients.copy()
         ssn = SSN(
-            K=K_support, alpha=self.alpha, target=self.target, M=self.M, mode=mode
+            K=K_support,
+            alpha=self.alpha,
+            target=self.target,
+            M=self.M,
+            g=self.g,
+            f=self.f,
+            grad_f=self.grad_f,
+            hess_f=self.hess_f,
+            mode=mode,
         )
         ssn_raw = ssn.solve(tol=Psi, u_0=u_0)
         raw_Psi = ssn.Psi(ssn_raw)
@@ -329,7 +343,7 @@ class NLGCG:
 
     def local_merging_update_radii(self, u: Measure, c: float) -> tuple:
         if not len(u.coefficients):
-            return np.array([]), u, []
+            return np.array([[]]), u, []
         radii = self.compute_radii(u, c)
         p_u = self.p(u, c)
         p_norm = lambda x: np.abs(p_u(x))
@@ -608,11 +622,11 @@ class NLGCG:
                 u_drop, c_plus, self.machine_precision, mode="positive"
             )
             dropped_tot += dropped
-            self.M = self.j(u_coef, c_coef) / self.alpha
+            self.M = float(self.j(u_coef, c_coef) / self.alpha)
 
             parameters, u_ks, radii = self.local_merging_update_radii(u_coef, c_coef)
             c_ks = c_coef
-            local_M = self.j(u_ks, c_ks) / self.alpha
+            local_M = float(self.j(u_ks, c_ks) / self.alpha)
             epsilon_ks = (
                 epsilon + 0.5 * (self.j(u_ks, c_ks) - self.j(u_coef, c_coef)) / self.M
             )
@@ -623,7 +637,7 @@ class NLGCG:
             u_lm, c_lm = u_ks.copy(), c_ks
 
             s = 1
-            while True:  # len(u_ks.coefficients):
+            while len(u_ks.coefficients):
                 # Inner loop
 
                 # Check optimality and comparative descent
@@ -698,7 +712,7 @@ class NLGCG:
                     u_ks = u_ks_new.copy()
                     c_ks = c_ks_new
                     parameters = u_ks.to_matrix()
-                local_M = self.j(u_ks, c_ks) / self.alpha
+                local_M = float(self.j(u_ks, c_ks) / self.alpha)
                 p_u_ks = self.p(u_ks, c_ks)
                 q_u_ks = self.g(u_ks.coefficients) - u_ks.duality_pairing(p_u_ks)
 
@@ -750,6 +764,7 @@ class NLGCG:
             u_plus, epsilon, global_valid = self.lgcg_step(
                 p_u, u, c, epsilon, q_u, radii, mode
             )
+            c_plus = c
             lgcg_lazy += int(global_valid)
             lgcg_total += 1
 
