@@ -88,20 +88,33 @@ class NLGCG:
         if x.shape[1] > self.Omega.shape[0]:
             # Also project the weights
             local_Omega = np.vstack((np.array([-self.M, self.M]), self.Omega))
+            variance_dimension = 1
         else:
             local_Omega = self.Omega
+            variance_dimension = 0
         for i, bounds in zip(range(x.shape[1]), local_Omega):
             column = x[:, i].copy()
-            x[:, i] = np.clip(column, bounds[0], bounds[1])
+            if i != variance_dimension:
+                x[:, i] = np.clip(column, bounds[0], bounds[1])
         return x
 
-    def sample_domain(self, size: int) -> np.ndarray:
+    def sample_domain(self, size: int, u: Measure = Measure()) -> np.ndarray:
         # Generate a uniform sample of shape (size,domain.shape[0]) in the given domain
         columns = []
-        for bounds in self.Omega:
-            columns.append(
-                np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
-            )
+        for i, bounds in enumerate(self.Omega):
+            if i == 0:
+                if len(u.coefficients):
+                    distribution_parameter = max(u.support[:, 0].max(), bounds[1])
+                else:
+                    distribution_parameter = bounds[1]
+                columns.append(
+                    np.random.exponential(scale=distribution_parameter, size=(size, 1))
+                    + bounds[0]
+                )
+            else:
+                columns.append(
+                    np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
+                )
         sample = np.concatenate(columns, axis=1)
         return sample
 
@@ -134,10 +147,10 @@ class NLGCG:
         radius: float,
         mode: str = "deterministic",
     ) -> tuple:
-        p_norm = lambda x: np.abs(p_u(x))
+        p_norm = lambda x: np.abs(np.array(p_u(x)))
 
         if mode == "stochastic":
-            grid = self.sample_domain(self.lazy_sample)
+            grid = self.sample_domain(self.lazy_sample, u)
             if len(u.support):
                 grid = np.vstack((grid, u.support))
             grid_vals = p_norm(grid)
@@ -150,7 +163,7 @@ class NLGCG:
             else:
                 lazy_grid = grid.copy()
                 lazy_grid_vals = grid_vals.copy()
-                grid = self.sample_domain(self.exact_sample)
+                grid = self.sample_domain(self.exact_sample, u)
                 grid_vals = p_norm(grid)
                 grid = np.vstack((grid, lazy_grid))
                 grid_vals = np.hstack((grid_vals, lazy_grid_vals))
@@ -166,6 +179,7 @@ class NLGCG:
             grad_P = self.grad_P(u, c)
             hess_P = self.hess_P(u, c)
             grid = self.get_grid(u)
+            optimize_grid = np.array([True] * grid.shape[0])
             grid_vals = p_norm(grid)
             max_ind = np.argmax(grid_vals)
             best_val = grid_vals[max_ind]
@@ -183,31 +197,49 @@ class NLGCG:
                     if phi_val >= self.M * epsilon:
                         break
                     batch_points = grid[batch]
+                    optimize_batch = optimize_grid[batch]
+                    batch_vals = grid_vals[batch]
                     new_points_plus = np.zeros(batch_points.shape)
                     new_points_minus = np.zeros(batch_points.shape)
                     gradients = grad_P(batch_points)
                     hessians = hess_P(batch_points)
-                    for i, (point, gradient, hessian) in enumerate(
-                        zip(
-                            batch_points,
-                            gradients,
-                            hessians,
-                        )
+                    for i, (point, gradient, hessian, optimize) in enumerate(
+                        zip(batch_points, gradients, hessians, optimize_batch)
                     ):
-                        try:
-                            d = np.linalg.solve(hessian, -gradient)  # Newton step
-                        except np.linalg.LinAlgError:
-                            d = 0.1 * gradient
+                        if optimize:
+                            try:
+                                d = np.linalg.solve(hessian, -gradient)  # Newton step
+                            except np.linalg.LinAlgError:
+                                d = 0.1 * gradient
+                        else:
+                            d = np.zeros_like(point)
                         new_points_plus[i] = point + d
                         new_points_minus[i] = point - d
+                    # projected_new_points_plus = new_points_plus.copy()
                     projected_new_points_plus = self.project_into_domain(
                         new_points_plus
                     ).copy()
+                    # projected_new_points_minus = new_points_minus.copy()
                     projected_new_points_minus = self.project_into_domain(
                         new_points_minus
                     ).copy()
+
                     p_vals_plus = p_norm(projected_new_points_plus)
+                    p_vals_plus_invalid = np.isnan(p_vals_plus)
+                    p_vals_plus[p_vals_plus_invalid] = batch_vals[p_vals_plus_invalid]
+                    projected_new_points_plus[p_vals_plus_invalid] = batch_points[
+                        p_vals_plus_invalid
+                    ]
+
                     p_vals_minus = p_norm(projected_new_points_minus)
+                    p_vals_minus_invalid = np.isnan(p_vals_minus)
+                    p_vals_minus[p_vals_minus_invalid] = batch_vals[
+                        p_vals_minus_invalid
+                    ]
+                    projected_new_points_minus[p_vals_minus_invalid] = batch_points[
+                        p_vals_minus_invalid
+                    ]
+
                     plus_bigges_index = p_vals_plus > p_vals_minus
                     p_vals = np.maximum(p_vals_plus, p_vals_minus)
                     projected_new_points = np.zeros(batch_points.shape)
@@ -219,6 +251,10 @@ class NLGCG:
                     )
                     grid[batch] = projected_new_points
                     grid_vals[batch] = p_vals
+                    optimize_grid[batch] = optimize_batch & ~(
+                        p_vals_plus_invalid & p_vals_minus_invalid
+                    )
+
                     max_ind = np.argmax(p_vals)
                     max_val = p_vals[max_ind]
                     if max_val > best_val:
@@ -397,7 +433,7 @@ class NLGCG:
             j_N_new = self.j_N(full_parameters_new)
             if jnp.isnan(j_N_new):
                 j_N_new = j_N_init + 1
-        return full_parameters_new, sigma
+        return np.array(full_parameters_new), sigma
 
     def globalized_newton_step(self, parameters: np.ndarray, c: float) -> tuple:
         full_parameters = np.hstack((parameters.flatten(), np.array([c])))
@@ -467,7 +503,10 @@ class NLGCG:
                 expected_decrease = -0.5 * Phi**2 / Curv
             else:
                 expected_decrease = 0.5 * Curv - Phi
-            if abs(expected_decrease) < self.machine_precision:
+            if (
+                abs(expected_decrease) < self.machine_precision
+                and jdiff < self.machine_precision
+            ):
                 condition = True
             else:
                 condition = jdiff <= expected_decrease
@@ -484,16 +523,22 @@ class NLGCG:
                     expected_decrease = -0.5 * Phi**2 / Curv
                 else:
                     expected_decrease = 0.5 * Curv - Phi
-                if abs(expected_decrease) < self.machine_precision:
-                    condition = True
-                else:
-                    condition = jdiff <= expected_decrease
+                condition = jdiff <= expected_decrease
             self.C_raw *= 2
             u_plus = previous_u_plus.copy()
         if not global_valid:
             # We have a global maximum x_k
             epsilon = 0.5 * Phi / self.M
+        # support = u_plus.support
+        # coefficients = u_plus.coefficients
+        # keep_indices = np.abs(coefficients) > self.machine_precision
+        # u_plus = Measure(
+        #     support=support[keep_indices], coefficients=coefficients[keep_indices]
+        # )
+        # if self.j(u_plus, c) - j_initial < self.machine_precision:
         return u_plus, epsilon, global_valid
+        # else:
+        # return u, epsilon, "No Step"
 
     def domain_and_descent_tests(
         self,
@@ -510,9 +555,11 @@ class NLGCG:
         coefs = parameters[:, 0].flatten()
 
         # Domain test
-        if any(points_new[:, 0] == 0):
+        if any(points_new[:, 0] <= 0):
+            # Nonpositive variance
             output_bools.append(False)
         else:
+            # output_bools.append(True)
             projected_points_new = self.project_into_domain(points_new)
             projection_distance = np.linalg.norm(points_new - projected_points_new)
             output_bools.append(projection_distance == 0)
@@ -532,6 +579,7 @@ class NLGCG:
         j_N_diff = self.j_N(full_parameters_new) - self.j_N(full_parameters)
         if choice == "Grad" and j_N_diff >= -self.machine_precision:
             output_bools.append(False)
+        # if j_N_diff >= 0:
         elif choice == "Newt" and j_N_diff >= 0:
             output_bools.append(False)
         else:
@@ -616,12 +664,12 @@ class NLGCG:
 
             if len(u_plus.coefficients):
                 u_drop, dropped = self.drop_step(u_plus, c_plus)
+                dropped_tot += dropped
             else:
                 u_drop = u_plus.copy()
             u_coef, c_coef, finite_psi = self.finite_dimensional_step(
                 u_drop, c_plus, self.machine_precision, mode="positive"
             )
-            dropped_tot += dropped
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
 
             parameters, u_ks, radii = self.local_merging_update_radii(u_coef, c_coef)
@@ -637,6 +685,11 @@ class NLGCG:
             u_lm, c_lm = u_ks.copy(), c_ks
 
             s = 1
+            sigma = 0
+            if len(u_ks.coefficients):
+                logging.info(
+                    f"{k}, {0}: Globalization: NotA, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
+                )
             while len(u_ks.coefficients):
                 # Inner loop
 
@@ -648,6 +701,7 @@ class NLGCG:
                     u_ks_gcg, epsilon_ks, global_valid = self.lgcg_step(
                         p_u_ks, u_ks, c_ks, epsilon_ks, q_u_ks, radii, mode
                     )
+                    c_ks_gcg = c_ks
                     lgcg_lazy += int(global_valid)
                     lgcg_total += 1
                     descent_test, grad_norm = self.comparative_descent_test(
@@ -758,6 +812,13 @@ class NLGCG:
             iterate_values = [self.j(*iterate) for iterate in all_iterates]
             choice_index = np.argmin(iterate_values)
             u, c = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
+            if True:
+                # Only for quadratic loss
+                c = float(-np.mean(u.duality_pairing(self.kernel) - self.target))
+            else:
+                u, c, finite_psi = self.finite_dimensional_step(
+                    u, c, self.machine_precision, mode="positive"
+                )
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
 
@@ -774,12 +835,15 @@ class NLGCG:
             objective_values.append(self.j(u, c))
             epsilons.append(epsilon)
             logging.info(
-                f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {2*self.M*epsilon:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.12E}"
+                f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {u.support}, epsilon: {epsilon:.3E}, criterion: {2*self.M*epsilon:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.12E}"
             )
             logging.info(
                 "============================================================================================="
             )
             k += 1
+
+            # if k == 20:
+            #     break
 
         return (
             u,
