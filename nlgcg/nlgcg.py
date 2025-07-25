@@ -317,11 +317,9 @@ class NLGCG:
             signs = np.sign(coefs)
             signs[signs == 0] = 1
             K_support = np.multiply(K_support, signs)
-            # u_0 = np.abs(u.coefficients
             u_0 = np.abs(coefs)
         else:
             u_0 = coefs.copy()
-            # u_0 = u.coefficients.copy()
         ssn = SSN(
             K=K_support,
             alpha=self.alpha,
@@ -458,9 +456,10 @@ class NLGCG:
             full_parameters, update_direction, grad_j_N_z, choice
         )
         c_new = full_parameters_new[-1]
-        parameters_new = self.project_into_domain(
-            full_parameters_new[:-1].reshape(parameters.shape)
-        )
+        # parameters_new = self.project_into_domain(
+        #     full_parameters_new[:-1].reshape(parameters.shape)
+        # )
+        parameters_new = full_parameters_new[:-1].reshape(parameters.shape)
         return parameters_new, c_new, choice, sigma
 
     def lgcg_step(
@@ -559,19 +558,22 @@ class NLGCG:
             # Nonpositive variance
             output_bools.append(False)
         else:
-            # output_bools.append(True)
-            projected_points_new = self.project_into_domain(points_new)
-            projection_distance = np.linalg.norm(points_new - projected_points_new)
-            output_bools.append(projection_distance == 0)
+            output_bools.append(True)
+            # projected_points_new = self.project_into_domain(points_new)
+            # projection_distance = np.linalg.norm(points_new - projected_points_new)
+            # output_bools.append(projection_distance == 0)
 
         # M test
         output_bools.append(bool(np.linalg.norm(coefs_new, ord=1) <= local_M))
 
         # Sign test
-        if np.all(np.sign(coefs_new) == np.sign(coefs)):
+        bad_signs = np.where(np.sign(coefs_new) != np.sign(coefs))[0]
+        if not len(bad_signs):
             output_bools.append(True)
         else:
             output_bools.append(False)
+            logging.info(parameters[bad_signs])
+            logging.info(parameters_new[bad_signs])
 
         # Absolute descent test
         full_parameters = np.hstack((parameters.flatten(), np.array([c])))
@@ -587,7 +589,7 @@ class NLGCG:
 
         return output_bools
 
-    def comparative_descent_test(
+    def stationarity_descent_test(
         self, parameters: np.ndarray, c: float, epsilon: float, radii: list
     ) -> tuple:
         full_parameters = np.hstack((parameters.flatten(), np.array([c])))
@@ -693,32 +695,32 @@ class NLGCG:
             while len(u_ks.coefficients):
                 # Inner loop
 
-                # Check optimality and comparative descent
-                descent_test, grad_norm = self.comparative_descent_test(
+                # Check optimality and stationarity descent
+                stationarity_test, grad_norm = self.stationarity_descent_test(
                     parameters, c_ks, epsilon_ks, radii
                 )
-                if not descent_test:
+                if not stationarity_test:
                     u_ks_gcg, epsilon_ks, global_valid = self.lgcg_step(
                         p_u_ks, u_ks, c_ks, epsilon_ks, q_u_ks, radii, mode
                     )
                     c_ks_gcg = c_ks
                     lgcg_lazy += int(global_valid)
                     lgcg_total += 1
-                    descent_test, grad_norm = self.comparative_descent_test(
+                    stationarity_test, grad_norm = self.stationarity_descent_test(
                         parameters, c_ks, epsilon_ks, radii
                     )
                 else:
                     global_valid = "N/A"
-                if not descent_test:
+                if not stationarity_test:
                     times.append(time.time() - initial_time)
                     supports.append(len(u_ks.support))
                     inner_loop.append(1)
                     objective_values.append(self.j(u_ks, c_ks))
                     epsilons.append(epsilon_ks)
                     logging.info(
-                        f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
+                        f"{k}, {s}: Globalization: NotA, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
                     )
-                    logging.info(f"Descent test: {descent_test}")
+                    logging.info(f"Stationarity descent test: {stationarity_test}")
                     break
                 if (
                     min(2 * local_M * epsilon_ks, grad_norm) <= tol
@@ -813,7 +815,7 @@ class NLGCG:
             choice_index = np.argmin(iterate_values)
             u, c = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
             if True:
-                # Only for quadratic loss
+                # Only for quadratic loss, set optimal constant
                 c = float(-np.mean(u.duality_pairing(self.kernel) - self.target))
             else:
                 u, c, finite_psi = self.finite_dimensional_step(

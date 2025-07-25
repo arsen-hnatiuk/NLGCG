@@ -38,7 +38,7 @@ class SSN:
             )
             self.j = lambda u: float(self.f(self.K @ u) + self.g(u))
             self.M = M
-            self.target_norm = np.linalg.norm(self.target, ord=0)
+            self.target_norm = np.linalg.norm(self.target, ord=np.inf)
             self.maximum_iterations = maximum_iterations
             if mode == "unconstrained":
                 self.Psi = self.Psi_unconstrained
