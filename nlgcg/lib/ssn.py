@@ -16,7 +16,10 @@ class SSN:
         alpha: float,
         target: np.ndarray,
         M: float,
-        minimum_iterations: int = 0,
+        g: Callable,
+        f: Callable,
+        grad_f: Callable,
+        hess_f: Callable,
         mode: str = "unconstrained",  # "unconstrained" for unconstrained, else for positive solutions
         maximum_iterations: int = 100,
     ) -> None:
@@ -25,13 +28,17 @@ class SSN:
             self.machine_precision = 1e-12
             self.target = target
             self.alpha = alpha
-            self.g = get_default_g(self.alpha)
-            self.f = get_default_f(self.K, self.target)
-            self.p = get_default_p(self.K, self.target)  # -f'
-            self.hessian = get_default_hessian(self.K)
-            self.j = lambda u: self.f(u) + self.g(u)
+            self.g = lambda u: float(g(u[:-1]))
+            self.f = f
+            self.grad_f = grad_f
+            self.hess_f = hess_f
+            self.p = lambda u: -np.array(self.K.T @ self.grad_f(self.K @ u))  # -f'
+            self.hessian = lambda u: np.array(
+                self.K.T @ self.hess_f(self.K @ u) @ self.K
+            )
+            self.j = lambda u: float(self.f(self.K @ u) + self.g(u))
             self.M = M
-            self.minimum_iterations = minimum_iterations
+            self.target_norm = np.linalg.norm(self.target, ord=np.inf)
             self.maximum_iterations = maximum_iterations
             if mode == "unconstrained":
                 self.Psi = self.Psi_unconstrained
@@ -44,38 +51,57 @@ class SSN:
 
     def Psi_unconstrained(self, u: np.ndarray) -> np.ndarray:
         # sup_v <p(u),v-u>+g(u)-g(v)
+        u = u.copy()
         p = self.p(u)
         constant_part = -np.matmul(p, u) + self.g(u)
-        variable_part = self.M * max(0, np.max(np.absolute(p)) - self.alpha)
+        regularization_summand = self.alpha * np.ones(p.shape)
+        regularization_summand[-1] = 0  # Last element is not regularized
+        norm_multiplier = self.M * np.ones(len(p))
+        norm_multiplier[-1] = self.target_norm
+        to_maximize = np.multiply(norm_multiplier, np.abs(p) - regularization_summand)
+        variable_part = max(0, np.max(to_maximize))
         return constant_part + variable_part
 
     def Psi_positive(self, u: np.ndarray) -> np.ndarray:
         # sup_v <p(u),v-u>+g(u)-g(v)
+        u = u.copy()
         p = self.p(u)
         constant_part = -np.matmul(p, u) + self.g(u)
-        variable_part = self.M * max(0, np.max(p) - self.alpha)
-        # return max(0, np.max(p) - self.alpha)
+        regularization_summand = self.alpha * np.ones(p.shape)
+        regularization_summand[-1] = 0  # Last element is not regularized
+        norm_multiplier = self.M * np.ones(len(p))
+        norm_multiplier[-1] = self.target_norm
+        to_maximize = np.multiply(norm_multiplier, p - regularization_summand)
+        variable_part = max(0, np.max(to_maximize))
         return constant_part + variable_part
 
-    def prox_unconstrained(self, q: np.ndarray, alpha: float) -> np.ndarray:
+    def prox_unconstrained(self, q: np.ndarray) -> np.ndarray:
+        q = q.copy()
         to_return = np.zeros(q.shape)
-        for i, val in enumerate(q):
-            if np.abs(val) > alpha:
-                to_return[i] = val - alpha * np.sign(val)
+        for i, val in enumerate(q[:-1]):
+            if np.abs(val) > self.alpha:
+                to_return[i] = val - self.alpha * np.sign(val)
+        to_return[-1] = q[-1]  # Last element is not regularized
         return to_return
 
-    def prox_positive(self, q: np.ndarray, alpha: float) -> np.ndarray:
+    def prox_positive(self, q: np.ndarray) -> np.ndarray:
+        q = q.copy()
         to_return = np.zeros(q.shape)
-        for i, val in enumerate(q):
-            if val > alpha:
-                to_return[i] = val - alpha
+        for i, val in enumerate(q[:-1]):
+            if val > self.alpha:
+                to_return[i] = val - self.alpha
+        to_return[-1] = q[-1]  # Last element is not regularized
         return to_return
 
-    def grad_prox_unconstrained(self, q: np.ndarray, alpha: float) -> np.ndarray:
-        return np.diag(np.where(np.abs(q) > alpha, 1, 0))
+    def grad_prox_unconstrained(self, q: np.ndarray) -> np.ndarray:
+        q = q.copy()
+        q[-1] = self.alpha + 1  # Last element is not regularized
+        return np.diag(np.where(np.abs(q) > self.alpha, 1, 0))
 
-    def grad_prox_positive(self, q: np.ndarray, alpha: float) -> np.ndarray:
-        return np.diag(np.where(q > alpha, 1, 0))
+    def grad_prox_positive(self, q: np.ndarray) -> np.ndarray:
+        q = q.copy()
+        q[-1] = self.alpha + 1  # Last element is not regularized
+        return np.diag(np.where(q > self.alpha, 1, 0))
 
     def solve(self, tol: float, u_0: np.ndarray) -> np.ndarray:
         # Semismooth Newton method (globalized via line search)
@@ -85,45 +111,41 @@ class SSN:
         theta = tol  # Set initial value for the step length parameter
         Id = np.identity(len(u_0))
         initial_j = self.j(u_0)
-        q = u_0 + self.p(u_0)
-        prox_q = self.prox(q, self.alpha)  # The actual iterate
+        q = u_0  #  + self.p(u_0)
+        prox_q = self.prox(q)  # The actual iterate
         k = 0
-        while k - 1 < self.minimum_iterations:
-            while self.Psi(prox_q) > tol or self.j(prox_q) > initial_j:
-                right_hand = q - prox_q - self.p(prox_q)
-                left_hand = Id + (self.hessian - Id) @ self.grad_prox(q, self.alpha)
-                theta = theta / 10
-                direction = np.linalg.solve(left_hand + theta * Id, right_hand)
-                qnew = q - direction
-                prox_qnew = self.prox(qnew, self.alpha)
-
-                # Backtracking line search
-                qdiff = self.j(prox_qnew) - self.j(prox_q)
-                while qdiff >= tol:
-                    theta = 2 * theta
-                    try:
-                        direction = np.linalg.solve(left_hand + theta * Id, right_hand)
-                    except np.linalg.LinAlgError:
-                        logging.info(
-                            f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {self.Psi(prox_q):.3E} achieved"
-                        )
-                        return prox_q
-                    qnew = q - direction
-                    prox_qnew = self.prox(qnew, self.alpha)
-                    qdiff = self.j(prox_qnew) - self.j(prox_q)
-
-                q = qnew
-                prox_q = prox_qnew
-                k += 1
-                if k > self.maximum_iterations:
+        while self.Psi(prox_q) > tol or self.j(prox_q) > initial_j:
+            right_hand = q - prox_q - self.p(prox_q)
+            left_hand = Id + (self.hessian(prox_q) - Id) @ self.grad_prox(q)
+            theta = theta / 10
+            qdiff = tol + 1
+            while qdiff >= tol:
+                theta = 2 * theta
+                try:
+                    direction = np.linalg.solve(left_hand + theta * Id, right_hand)
+                except np.linalg.LinAlgError:
                     logging.info(
-                        f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {self.Psi(prox_q):.3E} achieved"
+                        f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {self.Psi(prox_q):.3E} achieved"
                     )
-                    return prox_q
-            last_tol = tol
-            tol = max(tol / 2, self.machine_precision)
+                    if self.j(prox_q) <= initial_j:
+                        return prox_q
+                    else:
+                        return u_0
+                qnew = q - direction
+                prox_qnew = self.prox(qnew)
+                qdiff = self.j(prox_qnew) - self.j(prox_q)
+            q = qnew
+            prox_q = prox_qnew
+            self.M = float(min(self.M, self.j(prox_q) / self.alpha))
             k += 1
-        tol = last_tol
+            if k > self.maximum_iterations:
+                logging.info(
+                    f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {self.Psi(prox_q):.3E} achieved"
+                )
+                if self.j(prox_q) <= initial_j:
+                    return prox_q
+                else:
+                    return u_0
 
         logging.info(
             f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
