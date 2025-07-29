@@ -573,8 +573,8 @@ class NLGCG:
             output_bools.append(True)
         else:
             output_bools.append(False)
-            logging.info(parameters[bad_signs])
-            logging.info(parameters_new[bad_signs])
+            # logging.info(parameters[bad_signs])
+            # logging.info(parameters_new[bad_signs])
 
         # Absolute descent test
         full_parameters = np.hstack((parameters.flatten(), np.array([c])))
