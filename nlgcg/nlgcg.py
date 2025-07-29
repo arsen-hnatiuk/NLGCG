@@ -437,6 +437,7 @@ class NLGCG:
         full_parameters = np.hstack((parameters.flatten(), np.array([c])))
         grad_j_N_z = self.grad_j_N(full_parameters)
         hess_j_N_z = self.hess_j_N(full_parameters)
+        # logging.info(np.abs(np.linalg.eigvals(hess_j_N_z)))
         try:
             update_direction = np.linalg.solve(hess_j_N_z, -grad_j_N_z)
             update_norm = np.linalg.norm(update_direction)
@@ -624,9 +625,15 @@ class NLGCG:
         grads = grad_P(u.support)
         hesses = hess_P(u.support)
         for point_grad, point_hess in zip(grads, hesses):
+            grad_norm = np.linalg.norm(point_grad)
             try:
                 eigenvalue = np.min(np.abs(np.linalg.eigvals(point_hess)))
-                local_radius = 4 * np.linalg.norm(point_grad) / eigenvalue
+                if eigenvalue:
+                    local_radius = 4 * grad_norm / eigenvalue
+                elif grad_norm:
+                    local_radius = self.max_radius
+                else:
+                    local_radius = 0
                 radii.append(min(local_radius, self.max_radius))
             except np.linalg.LinAlgError:
                 # If the Hessian contains nan, we cannot compute a radius
@@ -720,7 +727,9 @@ class NLGCG:
                     logging.info(
                         f"{k}, {s}: Globalization: NotA, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
                     )
-                    logging.info(f"Stationarity descent test: {stationarity_test}")
+                    logging.info(
+                        f"Stationarity descent test: {stationarity_test}, grad_norm: {grad_norm:.3E}"
+                    )
                     break
                 if (
                     min(2 * local_M * epsilon_ks, grad_norm) <= tol
@@ -740,6 +749,12 @@ class NLGCG:
                 domain_tests = self.domain_and_descent_tests(
                     parameters, c_ks, parameters_new, c_ks_new, local_M, newton_choice
                 )
+                # if not domain_tests[2]:
+                #     u_ks_new, c_ks_new, finite_psi = self.finite_dimensional_step(
+                #         u_ks_new, c_ks_new, self.machine_precision, mode="positive"
+                #     )
+                #     parameters_new = u_ks_new.to_matrix()
+                #     logging.info(parameters_new)
                 if not all(domain_tests):
                     times.append(time.time() - initial_time)
                     supports.append(len(u_ks_new.support))
@@ -782,7 +797,7 @@ class NLGCG:
                     f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
                 )
                 s += 1
-                if s == 100:
+                if s == 20:
                     logging.info(
                         "Too many iterations in the inner loop, stopping the process"
                     )
