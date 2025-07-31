@@ -43,6 +43,9 @@ class NLGCG:
         armijo_constant: float = 1e-4,
         newton_p: float = 1e-1,
         descent_constant: float = 1e-6,
+        lazy_sample: int = 1000,
+        exact_sample: int = 100000,
+        max_inner_loop: int = 20,
     ) -> None:
         self.target = target
         self.kernel = kernel
@@ -77,8 +80,9 @@ class NLGCG:
         self.armijo_constant = armijo_constant  # For Armijo rule
         self.newton_p = 2 + newton_p  # For Newton step acceptance condition
         self.descent_constant = descent_constant  # For Newton step acceptance condition
-        self.lazy_sample = int(1e3)
-        self.exact_sample = int(1e5)
+        self.lazy_sample = lazy_sample
+        self.exact_sample = exact_sample
+        self.max_inner_loop = max_inner_loop
 
     def project_into_domain(
         self, x: Union[np.ndarray, jaxlib.xla_extension.ArrayImpl]
@@ -797,7 +801,7 @@ class NLGCG:
                     f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
                 )
                 s += 1
-                if s == 20:
+                if s == self.max_inner_loop:
                     logging.info(
                         "Too many iterations in the inner loop, stopping the process"
                     )

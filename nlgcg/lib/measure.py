@@ -1,6 +1,5 @@
 import numpy as np
 from typing import Callable, Union
-import logging
 
 
 class Measure:
@@ -48,11 +47,11 @@ class Measure:
         else:
             values = fct(self.support.copy())
         if len(values.shape) > 1:
-            values = values.T
-            result = values @ self.coefficients
-            result = result.flatten()
+            # values = values.T
+            result = np.tensordot(values, self.coefficients, axes=([0], [0]))
+            # result = result.flatten()
         else:
-            result = values @ self.coefficients
+            result = np.tensordot(values, self.coefficients, axes=([0], [0]))
         return result
 
     def copy(self) -> "Measure":
