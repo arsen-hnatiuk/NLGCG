@@ -20,8 +20,9 @@ class SSN:
         f: Callable,
         grad_f: Callable,
         hess_f: Callable,
+        invariable_kernel: np.ndarray,
         mode: str = "unconstrained",  # "unconstrained" for unconstrained, else for positive solutions
-        maximum_iterations: int = 100,
+        maximum_iterations: int = 1000,
     ) -> None:
         self.K = K
         if all(self.K.shape):
@@ -32,11 +33,16 @@ class SSN:
             self.f = f
             self.grad_f = grad_f
             self.hess_f = hess_f
-            self.p = lambda u: -np.array(self.K.T @ self.grad_f(self.K @ u))  # -f'
+            self.invariable_kernel = invariable_kernel
+            self.p = lambda u: -np.array(
+                self.K.T @ self.grad_f(self.invariable_kernel + self.K @ u)
+            )  # -f'
             self.hessian = lambda u: np.array(
-                self.K.T @ self.hess_f(self.K @ u) @ self.K
+                self.K.T @ self.hess_f(self.invariable_kernel + self.K @ u) @ self.K
             )
-            self.j = lambda u: float(self.f(self.K @ u) + self.g(u))
+            self.j = lambda u: float(
+                self.f(self.invariable_kernel + self.K @ u) + self.g(u)
+            )
             self.M = M
             self.target_norm = np.linalg.norm(self.target, ord=np.inf)
             self.maximum_iterations = maximum_iterations
@@ -113,8 +119,13 @@ class SSN:
         initial_j = self.j(u_0)
         q = u_0  #  + self.p(u_0)
         prox_q = self.prox(q)  # The actual iterate
+        psi_val = self.Psi(q)
         k = 0
-        while self.Psi(prox_q) > tol or self.j(prox_q) > initial_j:
+        while psi_val > tol or self.j(prox_q) > initial_j:
+            # logging.info("_---------------------")
+            # logging.info(prox_q > 0)
+            # logging.info(self.p(prox_q))
+            # logging.info(self.Psi(prox_q))
             right_hand = q - prox_q - self.p(prox_q)
             left_hand = Id + (self.hessian(prox_q) - Id) @ self.grad_prox(q)
             theta = theta / 10
@@ -134,9 +145,11 @@ class SSN:
                 qnew = q - direction
                 prox_qnew = self.prox(qnew)
                 qdiff = self.j(prox_qnew) - self.j(prox_q)
+            # logging.info(qdiff)
             q = qnew
             prox_q = prox_qnew
             self.M = float(min(self.M, self.j(prox_q) / self.alpha))
+            psi_val = self.Psi(prox_q)
             k += 1
             if k > self.maximum_iterations:
                 logging.info(

@@ -29,13 +29,15 @@ class NLGCG:
         j: Callable,  # Objective
         j_N: Callable,  # parameterized objective
         p: Callable,  # Dual variable
-        grad_P: Callable,
-        hess_P: Callable,
+        grad_p: Callable,
+        hess_p: Callable,
         grad_j_N: Callable,
         hess_j_N: Callable,
         alpha: float,
         Omega: np.ndarray,
         global_search_resolution: int,
+        constant_dim: int,
+        kernel_dim: int,
         M: float = 1e6,
         C_0: float = 1,
         dual_variable_goodness: float = 0.5,
@@ -46,12 +48,13 @@ class NLGCG:
         lazy_sample: int = 1000,
         exact_sample: int = 100000,
         max_inner_loop: int = 20,
+        ssn_steps: int = 100,
     ) -> None:
         self.target = target
         self.kernel = kernel
         self.p = p
-        self.grad_P = grad_P
-        self.hess_P = hess_P
+        self.grad_p = grad_p
+        self.hess_p = hess_p
         self.alpha = alpha
         self.g = g
         self.f = f
@@ -72,6 +75,8 @@ class NLGCG:
         self.global_search_resolution = global_search_resolution
         self.grad_j_N = grad_j_N
         self.hess_j_N = hess_j_N
+        self.constant_dim = constant_dim
+        self.kernel_dim = kernel_dim
         self.machine_precision = 1e-12
         self.stop_search = 5
         self.batching_constant = 2e8
@@ -83,6 +88,7 @@ class NLGCG:
         self.lazy_sample = lazy_sample
         self.exact_sample = exact_sample
         self.max_inner_loop = max_inner_loop
+        self.ssn_steps = ssn_steps
 
     def project_into_domain(
         self, x: Union[np.ndarray, jaxlib.xla_extension.ArrayImpl]
@@ -180,8 +186,8 @@ class NLGCG:
                 else:
                     success = False
         else:
-            grad_P = self.grad_P(u, c)
-            hess_P = self.hess_P(u, c)
+            grad_p = self.grad_p(u, c)
+            hess_p = self.hess_p(u, c)
             grid = self.get_grid(u)
             optimize_grid = np.array([True] * grid.shape[0])
             grid_vals = p_norm(grid)
@@ -205,8 +211,8 @@ class NLGCG:
                     batch_vals = grid_vals[batch]
                     new_points_plus = np.zeros(batch_points.shape)
                     new_points_minus = np.zeros(batch_points.shape)
-                    gradients = grad_P(batch_points)
-                    hessians = hess_P(batch_points)
+                    gradients = grad_p(batch_points)
+                    hessians = hess_p(batch_points)
                     for i, (point, gradient, hessian, optimize) in enumerate(
                         zip(batch_points, gradients, hessians, optimize_batch)
                     ):
@@ -308,15 +314,25 @@ class NLGCG:
         )
 
     def finite_dimensional_step(
-        self, u: Measure, c: float, Psi: float, mode: str = "unconstrained"
+        self,
+        u: Measure,
+        c: float,
+        Psi: float,
+        mode: str = "unconstrained",
+        optimization: str = "full",
     ) -> tuple:
-        K_support = np.ones((len(self.target), 1))
+        K_support = np.hstack(
+            (np.ones(self.constant_dim), np.zeros(self.kernel_dim - self.constant_dim))
+        ).reshape(-1, 1)
         coefs = np.array([c])
-        # if not len(u.coefficients):
-        # return u, Psi * 2
+        invariable_kernel = np.zeros((self.kernel_dim))
         if len(u.coefficients):
-            K_support = np.hstack((self.kernel(u.support).T, K_support))
-            coefs = np.hstack((u.coefficients, coefs))
+            measure_K = self.kernel(u.support).T
+            if optimization == "full":
+                K_support = np.hstack((measure_K, K_support))
+                coefs = np.hstack((u.coefficients, coefs))
+            elif optimization == "constant":
+                invariable_kernel = measure_K @ u.coefficients
         if mode == "positive":
             signs = np.sign(coefs)
             signs[signs == 0] = 1
@@ -333,23 +349,51 @@ class NLGCG:
             f=self.f,
             grad_f=self.grad_f,
             hess_f=self.hess_f,
+            invariable_kernel=invariable_kernel,
             mode=mode,
+            maximum_iterations=self.ssn_steps,
         )
-        ssn_raw = ssn.solve(tol=Psi, u_0=u_0)
-        raw_Psi = ssn.Psi(ssn_raw)
+        ssn_solution = ssn.solve(tol=Psi, u_0=u_0)
+        raw_Psi = ssn.Psi(ssn_solution)
         if mode == "positive":
-            ssn_raw = ssn_raw * signs
-        u_raw = ssn_raw[:-1]
-        c_raw = ssn_raw[-1]
-        # Reconstruct u
-        if len(u_raw):
-            u_plus = Measure(
-                support=u.support[u_raw != 0].copy(),
-                coefficients=u_raw[u_raw != 0].copy(),
-            )
+            ssn_normal = ssn_solution * signs
+            ssn_clipped = np.maximum(ssn_solution, np.zeros(len(ssn_solution))) * signs
+            # The SSN in positive mode can return a better solution with wrong signs
         else:
-            u_plus = Measure()
-        return u_plus, c_raw, raw_Psi
+            ssn_normal = ssn_solution.copy()
+            ssn_clipped = ssn_solution.copy()
+        if optimization == "full":
+            u_raw_normal = ssn_normal[:-1]
+            u_raw_clipped = ssn_clipped[:-1]
+            c_plus_normal = ssn_normal[-1]
+            c_plus_clipped = ssn_clipped[-1]
+            # Reconstruct u
+            if len(u_raw_normal):
+                u_plus_normal = Measure(
+                    support=u.support[u_raw_normal != 0].copy(),
+                    coefficients=u_raw_normal[u_raw_normal != 0].copy(),
+                )
+                u_plus_clipped = Measure(
+                    support=u.support[u_raw_clipped != 0].copy(),
+                    coefficients=u_raw_clipped[u_raw_clipped != 0].copy(),
+                )
+            else:
+                u_plus_normal = Measure()
+                u_plus_clipped = Measure()
+        elif optimization == "constant":
+            c_plus_normal = ssn_normal[0]
+            c_plus_clipped = ssn_clipped[0]
+            u_plus_normal = u.copy()
+            u_plus_clipped = u.copy()
+        tuples = [
+            (u_plus_normal, c_plus_normal),
+            (u_plus_clipped, c_plus_clipped),
+            (u, c),
+        ]
+        values = [self.j(u, c) for u, c in tuples]
+        best_value = np.argmin(values)
+        u_plus, c_plus = tuples[best_value]
+        return u_plus, c_plus, raw_Psi
 
     def drop_step(self, u: Measure, c: float) -> tuple:
         if not len(u.coefficients):
@@ -441,7 +485,6 @@ class NLGCG:
         full_parameters = np.hstack((parameters.flatten(), np.array([c])))
         grad_j_N_z = self.grad_j_N(full_parameters)
         hess_j_N_z = self.hess_j_N(full_parameters)
-        # logging.info(np.abs(np.linalg.eigvals(hess_j_N_z)))
         try:
             update_direction = np.linalg.solve(hess_j_N_z, -grad_j_N_z)
             update_norm = np.linalg.norm(update_direction)
@@ -486,6 +529,7 @@ class NLGCG:
         x_k, found_points, global_valid = self.global_search(
             u, c, epsilon, q_u, p_u, radius, mode
         )
+        logging.info(x_k)
         Phi = self.M * max((np.abs(p_u(x_k.reshape(1, -1)))[0] - self.alpha), 0) + q_u
         if Phi > q_u:
             v = Measure(
@@ -586,7 +630,6 @@ class NLGCG:
         j_N_diff = self.j_N(full_parameters_new) - self.j_N(full_parameters)
         if choice == "Grad" and j_N_diff >= -self.machine_precision:
             output_bools.append(False)
-        # if j_N_diff >= 0:
         elif choice == "Newt" and j_N_diff >= 0:
             output_bools.append(False)
         else:
@@ -624,10 +667,10 @@ class NLGCG:
         radii = []
         if not len(u.coefficients):
             return radii
-        grad_P = self.grad_P(u, c)
-        hess_P = self.hess_P(u, c)
-        grads = grad_P(u.support)
-        hesses = hess_P(u.support)
+        grad_p = self.grad_p(u, c)
+        hess_p = self.hess_p(u, c)
+        grads = grad_p(u.support)
+        hesses = hess_p(u.support)
         for point_grad, point_hess in zip(grads, hesses):
             grad_norm = np.linalg.norm(point_grad)
             try:
@@ -681,7 +724,11 @@ class NLGCG:
             else:
                 u_drop = u_plus.copy()
             u_coef, c_coef, finite_psi = self.finite_dimensional_step(
-                u_drop, c_plus, self.machine_precision, mode="positive"
+                u_drop,
+                c_plus,
+                self.machine_precision,
+                mode="positive",
+                optimization="full",
             )
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
 
@@ -753,12 +800,6 @@ class NLGCG:
                 domain_tests = self.domain_and_descent_tests(
                     parameters, c_ks, parameters_new, c_ks_new, local_M, newton_choice
                 )
-                # if not domain_tests[2]:
-                #     u_ks_new, c_ks_new, finite_psi = self.finite_dimensional_step(
-                #         u_ks_new, c_ks_new, self.machine_precision, mode="positive"
-                #     )
-                #     parameters_new = u_ks_new.to_matrix()
-                #     logging.info(parameters_new)
                 if not all(domain_tests):
                     times.append(time.time() - initial_time)
                     supports.append(len(u_ks_new.support))
@@ -833,13 +874,16 @@ class NLGCG:
             iterate_values = [self.j(*iterate) for iterate in all_iterates]
             choice_index = np.argmin(iterate_values)
             u, c = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
-            if True:
-                # Only for quadratic loss, set optimal constant
-                c = float(-np.mean(u.duality_pairing(self.kernel) - self.target))
-            else:
-                u, c, finite_psi = self.finite_dimensional_step(
-                    u, c, self.machine_precision, mode="positive"
-                )
+            # if True:
+            #     # Only for quadratic loss, set optimal constant
+            #     c = float(-np.mean(u.duality_pairing(self.kernel) - self.target))
+            u, c, finite_psi = self.finite_dimensional_step(
+                u,
+                c,
+                self.machine_precision,
+                mode="unconstrained",
+                optimization="constant",
+            )
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
 
@@ -862,9 +906,6 @@ class NLGCG:
                 "============================================================================================="
             )
             k += 1
-
-            # if k == 20:
-            #     break
 
         return (
             u,
