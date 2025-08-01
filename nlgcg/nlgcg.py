@@ -113,13 +113,16 @@ class NLGCG:
         columns = []
         for i, bounds in enumerate(self.Omega):
             if i == 0:
-                if len(u.coefficients):
-                    distribution_parameter = max(u.support[:, 0].max(), bounds[1])
-                else:
-                    distribution_parameter = bounds[1]
+                # if len(u.coefficients):
+                #     distribution_parameter = max(u.support[:, 0].max(), bounds[1])
+                # else:
+                #     distribution_parameter = bounds[1]
+                # columns.append(
+                #     np.random.exponential(scale=distribution_parameter, size=(size, 1))
+                #     + bounds[0]
+                # )
                 columns.append(
-                    np.random.exponential(scale=distribution_parameter, size=(size, 1))
-                    + bounds[0]
+                    np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
                 )
             else:
                 columns.append(
@@ -529,7 +532,6 @@ class NLGCG:
         x_k, found_points, global_valid = self.global_search(
             u, c, epsilon, q_u, p_u, radius, mode
         )
-        logging.info(x_k)
         Phi = self.M * max((np.abs(p_u(x_k.reshape(1, -1)))[0] - self.alpha), 0) + q_u
         if Phi > q_u:
             v = Measure(
@@ -558,6 +560,7 @@ class NLGCG:
                 condition = True
             else:
                 condition = jdiff <= expected_decrease
+            # logging.info(f"{eta}, {expected_decrease}, {jdiff}")
         if updates < 2:
             # There has been no increase of the curvature constant, try a smaller value
             while condition and self.C_raw >= self.C_0:
@@ -577,6 +580,9 @@ class NLGCG:
         if not global_valid:
             # We have a global maximum x_k
             epsilon = 0.5 * Phi / self.M
+        logging.info(
+            f"{c}, {x_k}, {np.abs(p_u(x_k.reshape(1, -1)))[0]}, {eta}, {len(found_points)}"
+        )
         # support = u_plus.support
         # coefficients = u_plus.coefficients
         # keep_indices = np.abs(coefficients) > self.machine_precision
@@ -685,6 +691,7 @@ class NLGCG:
             except np.linalg.LinAlgError:
                 # If the Hessian contains nan, we cannot compute a radius
                 radii.append(self.max_radius)
+        # logging.info(radii)
         return radii
 
     def nlgcg(
@@ -730,6 +737,11 @@ class NLGCG:
                 mode="positive",
                 optimization="full",
             )
+            if len(u_coef.coefficients):
+                variances = u_coef.support[:, 0]
+                logging.info(
+                    f"coefs {u_coef.coefficients[variances > 1]} of large variances: {variances[variances > 1]}"
+                )
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
 
             parameters, u_ks, radii = self.local_merging_update_radii(u_coef, c_coef)
@@ -882,7 +894,7 @@ class NLGCG:
                 c,
                 self.machine_precision,
                 mode="unconstrained",
-                optimization="constant",
+                optimization="full",
             )
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
@@ -906,6 +918,9 @@ class NLGCG:
                 "============================================================================================="
             )
             k += 1
+
+            # if self.C_raw > 1e5:
+            #     break
 
         return (
             u,
