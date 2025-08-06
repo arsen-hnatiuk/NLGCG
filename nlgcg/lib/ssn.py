@@ -26,7 +26,6 @@ class SSN:
     ) -> None:
         self.K = K
         if all(self.K.shape):
-            self.machine_precision = 1e-12
             self.target = target
             self.alpha = alpha
             self.g = lambda u: float(g(u[:-1]))
@@ -44,7 +43,7 @@ class SSN:
                 self.f(self.invariable_kernel + self.K @ u) + self.g(u)
             )
             self.M = M
-            self.target_norm = np.linalg.norm(self.target, ord=np.inf)
+            self.target_norm = np.mean(np.abs(self.target))
             self.maximum_iterations = maximum_iterations
             if mode == "unconstrained":
                 self.Psi = self.Psi_unconstrained
@@ -56,27 +55,35 @@ class SSN:
                 self.grad_prox = self.grad_prox_positive
 
     def Psi_unconstrained(self, u: np.ndarray) -> np.ndarray:
-        # sup_v <p(u),v-u>+g(u)-g(v)
+        # sup_v <p(u),v-u>+g(u)-g(v), adjusted for numerical stability
         u = u.copy()
+        u_norm = np.linalg.norm(u, ord=1)
         p = self.p(u)
-        constant_part = -np.matmul(p, u) + self.g(u)
+        if u_norm:
+            constant_part = (-np.matmul(p, u) + self.g(u)) / u_norm
+        else:
+            constant_part = 0
         regularization_summand = self.alpha * np.ones(p.shape)
         regularization_summand[-1] = 0  # Last element is not regularized
-        norm_multiplier = self.M * np.ones(len(p))
-        norm_multiplier[-1] = self.target_norm
+        norm_multiplier = np.ones(len(p))  # * self.M
+        # norm_multiplier[-1] = self.target_norm
         to_maximize = np.multiply(norm_multiplier, np.abs(p) - regularization_summand)
         variable_part = max(0, np.max(to_maximize))
         return constant_part + variable_part
 
     def Psi_positive(self, u: np.ndarray) -> np.ndarray:
-        # sup_v <p(u),v-u>+g(u)-g(v)
+        # sup_v <p(u),v-u>+g(u)-g(v), adjusted for numerical stability
         u = u.copy()
+        u_norm = np.linalg.norm(u, ord=1)
         p = self.p(u)
-        constant_part = -np.matmul(p, u) + self.g(u)
+        if u_norm:
+            constant_part = (-np.matmul(p, u) + self.g(u)) / u_norm
+        else:
+            constant_part = 0
         regularization_summand = self.alpha * np.ones(p.shape)
         regularization_summand[-1] = 0  # Last element is not regularized
-        norm_multiplier = self.M * np.ones(len(p))
-        norm_multiplier[-1] = self.target_norm
+        norm_multiplier = np.ones(len(p))  # * self.M
+        # norm_multiplier[-1] = self.target_norm
         to_maximize = np.multiply(norm_multiplier, p - regularization_summand)
         variable_part = max(0, np.max(to_maximize))
         return constant_part + variable_part
@@ -122,10 +129,6 @@ class SSN:
         psi_val = self.Psi(q)
         k = 0
         while psi_val > tol or self.j(prox_q) > initial_j:
-            # logging.info("_---------------------")
-            # logging.info(prox_q > 0)
-            # logging.info(self.p(prox_q))
-            # logging.info(self.Psi(prox_q))
             right_hand = q - prox_q - self.p(prox_q)
             left_hand = Id + (self.hessian(prox_q) - Id) @ self.grad_prox(q)
             theta = theta / 10
@@ -145,7 +148,6 @@ class SSN:
                 qnew = q - direction
                 prox_qnew = self.prox(qnew)
                 qdiff = self.j(prox_qnew) - self.j(prox_q)
-            # logging.info(qdiff)
             q = qnew
             prox_q = prox_qnew
             self.M = float(min(self.M, self.j(prox_q) / self.alpha))
