@@ -60,7 +60,9 @@ class Measure:
             support=self.support.copy(), coefficients=self.coefficients.copy()
         )
 
-    def to_matrix(self) -> np.ndarray:
+    def to_matrix(self, param_dimension: float = 0) -> np.ndarray:
+        if not len(self.support):
+            return np.hstack((0, np.ones(param_dimension))).reshape(1, -1)
         return np.hstack((self.coefficients.copy().reshape(-1, 1), self.support.copy()))
 
     def __add__(self, other: "Measure") -> "Measure":

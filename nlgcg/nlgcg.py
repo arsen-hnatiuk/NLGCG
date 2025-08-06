@@ -113,17 +113,17 @@ class NLGCG:
         columns = []
         for i, bounds in enumerate(self.Omega):
             if i == 0:
-                # if len(u.coefficients):
-                #     distribution_parameter = max(u.support[:, 0].max(), bounds[1])
-                # else:
-                #     distribution_parameter = bounds[1]
-                # columns.append(
-                #     np.random.exponential(scale=distribution_parameter, size=(size, 1))
-                #     + bounds[0]
-                # )
+                if len(u.coefficients):
+                    distribution_parameter = max(u.support[:, 0].max(), bounds[1])
+                else:
+                    distribution_parameter = bounds[1]
                 columns.append(
-                    np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
+                    np.random.exponential(scale=distribution_parameter, size=(size, 1))
+                    + bounds[0]
                 )
+                # columns.append(
+                #     np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
+                # )
             else:
                 columns.append(
                     np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
@@ -160,7 +160,7 @@ class NLGCG:
         radius: float,
         mode: str = "deterministic",
     ) -> tuple:
-        p_norm = lambda x: np.abs(np.array(p_u(x)))
+        p_norm = lambda x: np.abs(np.array(jnp.nan_to_num(p_u(x))))
 
         if mode == "stochastic":
             grid = self.sample_domain(self.lazy_sample, u)
@@ -533,6 +533,9 @@ class NLGCG:
             u, c, epsilon, q_u, p_u, radius, mode
         )
         Phi = self.M * max((np.abs(p_u(x_k.reshape(1, -1)))[0] - self.alpha), 0) + q_u
+        logging.info(
+            f"{x_k}, {np.abs(p_u(x_k.reshape(1, -1)))[0]}, {len(found_points)}"
+        )
         if Phi > q_u:
             v = Measure(
                 support=found_points, coefficients=self.M * np.sign(p_u(found_points))
@@ -580,9 +583,6 @@ class NLGCG:
         if not global_valid:
             # We have a global maximum x_k
             epsilon = 0.5 * Phi / self.M
-        logging.info(
-            f"{c}, {x_k}, {np.abs(p_u(x_k.reshape(1, -1)))[0]}, {eta}, {len(found_points)}"
-        )
         # support = u_plus.support
         # coefficients = u_plus.coefficients
         # keep_indices = np.abs(coefficients) > self.machine_precision
@@ -691,7 +691,7 @@ class NLGCG:
             except np.linalg.LinAlgError:
                 # If the Hessian contains nan, we cannot compute a radius
                 radii.append(self.max_radius)
-        # logging.info(radii)
+        logging.info(radii)
         return radii
 
     def nlgcg(
@@ -702,11 +702,12 @@ class NLGCG:
         u_0: Measure = Measure(),
         c_0: float = 0,
         mode: str = "deterministic",
+        inner_tol: float = 1e-4,
     ) -> tuple:
         self.max_radius = max_radius
-        self.M = self.M_0
+        self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
         self.C_raw = self.C_0
-        epsilon = 0.5 * self.j(u_0, c_0) / self.M
+        epsilon = max(1, 0.5 * self.j(u_0, c_0) / self.M)
         k = 0
         dropped = False
         optimal = False
@@ -737,11 +738,11 @@ class NLGCG:
                 mode="positive",
                 optimization="full",
             )
-            if len(u_coef.coefficients):
-                variances = u_coef.support[:, 0]
-                logging.info(
-                    f"coefs {u_coef.coefficients[variances > 1]} of large variances: {variances[variances > 1]}"
-                )
+            # if len(u_coef.coefficients):
+            #     variances = u_coef.support[:, 0]
+            #     logging.info(
+            #         f"coefs {u_coef.coefficients[variances > 1]} of large variances: {variances[variances > 1]}"
+            #     )
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
 
             parameters, u_ks, radii = self.local_merging_update_radii(u_coef, c_coef)
@@ -758,11 +759,11 @@ class NLGCG:
 
             s = 1
             sigma = 0
-            if len(u_ks.coefficients):
+            if len(u_ks.coefficients) and 2 * self.M * epsilon < inner_tol:
                 logging.info(
                     f"{k}, {0}: Globalization: NotA, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), np.array([c_ks])))):.12E}"
                 )
-            while len(u_ks.coefficients):
+            while len(u_ks.coefficients) and 2 * self.M * epsilon < inner_tol:
                 # Inner loop
 
                 # Check optimality and stationarity descent
@@ -822,6 +823,8 @@ class NLGCG:
                         f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks_new.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {2*self.M*epsilon_ks:.2E}, objective: {self.j_N(np.hstack((parameters_new.flatten(), np.array([c_ks_new])))):.12E}"
                     )
                     logging.info(f"Domain tests: {domain_tests}")
+                    if not domain_tests[-1]:
+                        logging.info(f"grad_norm: {grad_norm:.3E}")
                     break
 
                 # Perform drop and local merging
