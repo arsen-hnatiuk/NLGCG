@@ -49,6 +49,9 @@ class NLGCG:
         exact_sample: int = 100000,
         max_inner_loop: int = 20,
         ssn_steps: int = 100,
+        quasi_newton_storage: int = 5,
+        lbfgs_c_0: float = 1e-4,
+        wolfe_powell_constant: float = 0.9,
     ) -> None:
         self.target = target
         self.kernel = kernel
@@ -89,7 +92,11 @@ class NLGCG:
         self.exact_sample = exact_sample
         self.max_inner_loop = max_inner_loop
         self.ssn_steps = ssn_steps
-        self.quasi_newton_storage = 5
+        self.quasi_newton_storage = quasi_newton_storage
+        self.lbfgs_c_0 = lbfgs_c_0
+        self.lbfgs_c_1 = 1
+        self.lbfgs_c_2 = 1 / (2 * self.quasi_newton_storage + 3)
+        self.wolfe_powell_constant = wolfe_powell_constant
 
     def project_into_domain(
         self, x: Union[np.ndarray, jaxlib.xla_extension.ArrayImpl]
@@ -464,7 +471,7 @@ class NLGCG:
         gradient: np.ndarray,
         choice: str,
     ) -> tuple:
-        sigma = 1
+        sigma = 1  #  max(1, 1 / np.linalg.norm(direction))
         j_N_init = self.j_N(full_parameters)
         desired_descent = self.armijo_constant * gradient @ direction
         if choice == "Grad" and desired_descent > -self.machine_precision:
@@ -476,7 +483,6 @@ class NLGCG:
         while j_N_new - j_N_init > sigma * desired_descent:
             if choice == "Grad" and sigma * desired_descent > -self.machine_precision:
                 return full_parameters.copy(), -1
-            # elif sigma < self.machine_precision:
             elif sigma == 0:
                 return full_parameters.copy(), -1
             sigma *= self.beta
@@ -486,14 +492,16 @@ class NLGCG:
                 j_N_new = j_N_init + 1
         return np.array(full_parameters_new), sigma
 
-    def globalized_newton_step(self, parameters: np.ndarray, c: float) -> tuple:
-        full_parameters = np.hstack((parameters.flatten(), np.array([c])))
-        grad_j_N_z = self.grad_j_N(full_parameters)
-        hess_j_N_z = self.hess_j_N(full_parameters)
+    def globalized_newton_step(
+        self, full_parameters: np.ndarray, grad: np.ndarray
+    ) -> tuple:
+        # full_parameters = np.hstack((parameters.flatten(), np.array([c])))
+        # grad_j_N_z = self.grad_j_N(full_parameters)
+        hess = self.hess_j_N(full_parameters)
         try:
-            update_direction = np.linalg.solve(hess_j_N_z, -grad_j_N_z)
+            update_direction = np.linalg.solve(hess, -grad)
             update_norm = np.linalg.norm(update_direction)
-            grad_direction = -grad_j_N_z @ update_direction
+            grad_direction = -grad @ update_direction
             condition = (
                 grad_direction >= self.descent_constant * update_norm**self.newton_p
             )
@@ -501,19 +509,19 @@ class NLGCG:
                 raise np.linalg.LinAlgError("Insufficient descent in Newton direction")
             choice = "Newt"
         except np.linalg.LinAlgError:
-            update_direction = -grad_j_N_z.copy()
+            update_direction = -grad.copy()
             choice = "Grad"
         if any(jnp.isnan(update_direction)):
-            return parameters, c, "NAN in update direction", 1
+            return full_parameters, "NAN in update direction", 1
         full_parameters_new, sigma = self.armijo(
-            full_parameters, update_direction, grad_j_N_z, choice
+            full_parameters, update_direction, grad, choice
         )
-        c_new = full_parameters_new[-1]
+        # c_new = full_parameters_new[-1]
         # parameters_new = self.project_into_domain(
         #     full_parameters_new[:-1].reshape(parameters.shape)
         # )
-        parameters_new = full_parameters_new[:-1].reshape(parameters.shape)
-        return parameters_new, c_new, choice, sigma
+        # parameters_new = full_parameters_new[:-1].reshape(parameters.shape)
+        return full_parameters_new, choice, sigma
 
     def q_function(self, s: np.ndarray, y: np.ndarray) -> float:
         norm_s = s @ s
@@ -532,23 +540,21 @@ class NLGCG:
         gamma_minus: float,
         gamma_plus: float,
     ) -> tuple:
-        choice = "QsNt"
-        c_0 = 1e-4
-        c_1 = 1
-        c_2 = 1 / (2 * self.quasi_newton_storage + 3)
+        # https://arxiv.org/pdf/2401.03805
+
         grad_norm = np.linalg.norm(grad)
         if grad_norm < self.machine_precision:
             return full_parameters, grad, "Conv", -1, storage, gamma_minus, gamma_plus
 
-        small_omega = min(c_0, c_1 * grad_norm**c_2)
+        small_omega = min(self.lbfgs_c_0, self.lbfgs_c_1 * grad_norm**self.lbfgs_c_2)
         lower_omega = min(small_omega, 1 / small_omega)
         upper_omega = max(small_omega, 1 / small_omega)
         if lower_omega > gamma_plus or upper_omega < gamma_minus:
-            gamma = lower_omega  #  0.5 * (lower_omega + upper_omega)
+            gamma = lower_omega
         else:
             gamma = max(gamma_minus, lower_omega)
+        gamma = 1  # TODO
 
-        # logging.info(small_omega)
         quasi_inv_hesse = gamma * np.eye(len(full_parameters))
 
         used = 0
@@ -561,10 +567,9 @@ class NLGCG:
                 quasi_inv_hesse = (
                     v_matrix.T @ quasi_inv_hesse @ v_matrix + s_s_outer / scalar_product
                 )
-        # logging.info(np.linalg.eigvals(quasi_inv_hesse))
+        choice = f"Qua{used}"
 
         update_direction = -quasi_inv_hesse @ grad
-        update_direction = update_direction / np.linalg.norm(update_direction)
         full_parameters_new, sigma = self.armijo(
             full_parameters, update_direction, grad, choice
         )
@@ -572,25 +577,20 @@ class NLGCG:
         s = sigma * update_direction
         y = grad_new - grad
         scalar_product = s @ y
-        logging.info(f"{np.linalg.norm(s)}, {np.linalg.norm(y)}, {scalar_product}")
 
-        # # Check Wolfe-Powell conditions
-        # new_grad_direction = grad_new @ update_direction
-        # grad_direction = grad @ update_direction
-        # logging.info(
-        #     f"WP: {new_grad_direction >= 0.9*grad_direction}, strong WP: {np.abs(new_grad_direction) <= -0.9*grad_direction}"
-        # )
+        # Check Wolfe-Powell conditions
+        new_grad_direction = grad_new @ update_direction
+        grad_direction = grad @ update_direction
+        if (
+            not np.abs(new_grad_direction)
+            <= -self.wolfe_powell_constant * grad_direction
+        ):
+            logging.info(
+                f"WP: {new_grad_direction >= self.wolfe_powell_constant*grad_direction}, strong WP: {np.abs(new_grad_direction)/grad_direction}"
+            )
 
         if scalar_product > 0:
             if len(storage) == self.quasi_newton_storage:
-                # min_arg = 0
-                # min_val = np.inf
-                # for i, (s_local, y_local, scalar_product_local) in enumerate(storage):
-                #     if scalar_product_local < min_val:
-                #         min_arg = i
-                #         min_val = scalar_product_local
-                # storage[min_arg] = (s, y, scalar_product)
-                # logging.info(min_arg)
                 for i, tuple_ in enumerate(storage):
                     if i > 0:
                         storage[i - 1] = tuple_
@@ -643,7 +643,6 @@ class NLGCG:
             )
         else:
             phi_numerical = max(best_val - self.alpha, 0)
-        # logging.info(f"{x_k}, {best_val}, {len(found_points)}")
         if phi > q_u:
             v = Measure(
                 support=found_points, coefficients=self.M * np.sign(p_u(found_points))
@@ -671,7 +670,6 @@ class NLGCG:
                 condition = True
             else:
                 condition = jdiff <= expected_decrease
-            # logging.info(f"{eta}, {expected_decrease}, {jdiff}")
         if updates < 2:
             # There has been no increase of the curvature constant, try a smaller value
             while condition and self.C_raw >= self.C_0:
@@ -691,16 +689,7 @@ class NLGCG:
         if not global_valid:
             # We have a global maximum x_k
             epsilon = 0.5 * phi
-        # support = u_plus.support
-        # coefficients = u_plus.coefficients
-        # keep_indices = np.abs(coefficients) > self.machine_precision
-        # u_plus = Measure(
-        #     support=support[keep_indices], coefficients=coefficients[keep_indices]
-        # )
-        # if self.j(u_plus, c) - j_initial < self.machine_precision:
         return u_plus, epsilon, global_valid, phi_numerical
-        # else:
-        # return u, epsilon, "No Step"
 
     def domain_and_descent_tests(
         self,
@@ -810,6 +799,7 @@ class NLGCG:
         u_0: Measure = Measure(),
         c_0: float = 0,
         mode: str = "deterministic",
+        inner_mode: str = "newton",
         inner_tol: float = 1e4,
     ) -> tuple:
         self.max_radius = max_radius
@@ -832,7 +822,7 @@ class NLGCG:
         u_plus = u_0.copy()
         c_plus = c_0
         phi_numerical = inner_tol + 1
-        while True:  # phi_numerical > tol:
+        while phi_numerical > tol:
             global_valid = "N/A"
 
             if len(u_plus.coefficients):
@@ -861,73 +851,73 @@ class NLGCG:
 
             s = 1
             sigma = 0
-            ###
             storage = []
             gamma_minus = 0
             gamma_plus = np.inf
             full_parameters = np.hstack((parameters.flatten(), c_ks))
             grad = self.grad_j_N(full_parameters)
-            ###
             if len(u_ks.coefficients) and phi_numerical < inner_tol:
                 logging.info(
-                    f"{k}, {0}: Globalization: NotA, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), c_ks))):.14E}"
+                    f"{k}, {0}: Globalization: NotA, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, objective: {self.j_N(full_parameters):.14E}"
                 )
             while len(u_ks.coefficients) and phi_numerical < inner_tol:
                 # Inner loop
 
-                # Check optimality and stationarity descent
-                stationarity_test, grad_norm = self.stationarity_descent_test(
-                    parameters, c_ks, epsilon_ks, radii
-                )
-                if not stationarity_test:
-                    u_ks_gcg, epsilon_ks, global_valid, phi_numerical = self.lgcg_step(
-                        p_u_ks, u_ks, c_ks, epsilon_ks, q_u_ks, radii, mode
-                    )
-                    c_ks_gcg = c_ks
-                    lgcg_lazy += int(global_valid)
-                    lgcg_total += 1
-                    stationarity_test, grad_norm = self.stationarity_descent_test(
-                        parameters, c_ks, epsilon_ks, radii
-                    )
-                else:
-                    global_valid = "N/A"
-                if not stationarity_test:
-                    times.append(time.time() - initial_time)
-                    supports.append(len(u_ks.support))
-                    inner_loop.append(1)
-                    objective_values.append(self.j(u_ks, c_ks))
-                    epsilons.append(epsilon_ks)
-                    logging.info(
-                        f"{k}, {s}: Globalization: NotA, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), c_ks))):.14E}"
-                    )
-                    logging.info(
-                        f"Stationarity descent test: {stationarity_test}, grad_norm: {grad_norm:.3E}"
-                    )
-                    break
-                if min(phi_numerical, grad_norm) <= tol:  # Optimality reached
-                    optimal = True
-                    break
-                else:
-                    optimal = False
+                # # Check optimality and stationarity descent
+                # stationarity_test, grad_norm = self.stationarity_descent_test(
+                #     parameters, c_ks, epsilon_ks, radii
+                # )
+                # if not stationarity_test:
+                #     u_ks_gcg, epsilon_ks, global_valid, phi_numerical = self.lgcg_step(
+                #         p_u_ks, u_ks, c_ks, epsilon_ks, q_u_ks, radii, mode
+                #     )
+                #     c_ks_gcg = c_ks
+                #     lgcg_lazy += int(global_valid)
+                #     lgcg_total += 1
+                #     stationarity_test, grad_norm = self.stationarity_descent_test(
+                #         parameters, c_ks, epsilon_ks, radii
+                #     )
+                # else:
+                #     global_valid = "N/A"
+                # if not stationarity_test:
+                #     times.append(time.time() - initial_time)
+                #     supports.append(len(u_ks.support))
+                #     inner_loop.append(1)
+                #     objective_values.append(self.j(u_ks, c_ks))
+                #     epsilons.append(epsilon_ks)
+                #     logging.info(
+                #         f"{k}, {s}: Globalization: NotA, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, objective: {self.j_N(full_parameters):.14E}"
+                #     )
+                #     logging.info(
+                #         f"Stationarity descent test: {stationarity_test}, grad_norm: {grad_norm:.3E}"
+                #     )
+                #     break
+                # if min(phi_numerical, grad_norm) <= tol:  # Optimality reached
+                #     optimal = True
+                #     break
+                # else:
+                #     optimal = False
 
                 # Newton step
-                full_parameters = np.hstack((parameters.flatten(), c_ks))
-                (
-                    full_parameters_new,
-                    grad_new,
-                    newton_choice,
-                    sigma,
-                    storage,
-                    gamma_minus,
-                    gamma_plus,
-                ) = self.globalized_lbfgs(
-                    full_parameters, grad, storage, gamma_minus, gamma_plus
-                )
+                if inner_mode == "newton":
+                    full_parameters_new, newton_choice, sigma = (
+                        self.globalized_newton_step(full_parameters, grad)
+                    )
+                    grad_new = self.grad_j_N(full_parameters_new)
+                elif inner_mode == "lbfgs":
+                    (
+                        full_parameters_new,
+                        grad_new,
+                        newton_choice,
+                        sigma,
+                        storage,
+                        gamma_minus,
+                        gamma_plus,
+                    ) = self.globalized_lbfgs(
+                        full_parameters, grad, storage, gamma_minus, gamma_plus
+                    )
                 parameters_new = full_parameters_new[:-1].reshape(parameters.shape)
                 c_ks_new = full_parameters_new[-1]
-                # parameters_new, c_ks_new, newton_choice, sigma = (
-                #     self.globalized_newton_step(parameters, c_ks)
-                # )
                 u_ks_new = Measure(matrix=parameters_new)
 
                 # Check validity of the newton step
@@ -935,51 +925,46 @@ class NLGCG:
                     parameters, c_ks, parameters_new, c_ks_new, local_M, newton_choice
                 )
                 if not all(domain_tests):
-                    # parameters_new_, c_ks_new_, newton_choice_, sigma_ = (
-                    #     self.globalized_newton_step(parameters, c_ks)
-                    # )
-                    # logging.info(
-                    #     f"choice: {newton_choice_}, objective: {self.j_N(np.hstack((parameters_new_.flatten(), c_ks_new_))):.14E}"
-                    # )
-
                     times.append(time.time() - initial_time)
                     supports.append(len(u_ks_new.support))
                     inner_loop.append(1)
                     objective_values.append(self.j(u_ks_new, c_ks_new))
                     epsilons.append(epsilon_ks)
                     logging.info(
-                        f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks_new.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, objective: {self.j_N(np.hstack((parameters_new.flatten(), c_ks_new))):.14E}"
+                        f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks_new.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, objective: {self.j_N(full_parameters_new):.14E}"
                     )
                     logging.info(f"Domain tests: {domain_tests}")
                     if not domain_tests[-1]:
-                        logging.info(
-                            f"grad_norm: {grad_norm:.3E}, {gamma_minus}, {gamma_plus}, {len(storage)}"
-                        )
+                        logging.info(f"grad_norm: {np.linalg.norm(grad):.3E}")
                     break
 
-                # Perform drop and local merging
-                if s % drop_frequency == 0:
-                    u_ks_drop, dropped = self.drop_step(u_ks_new, c_ks_new)
-                    dropped_tot += dropped
-                    parameters, u_ks, radii = self.local_merging_update_radii(
-                        u_ks_drop, c_ks_new
-                    )
-                    c_ks = c_ks_new
-                    epsilon_ks = epsilon_ks + 0.5 * (
-                        self.j(u_ks, c_ks) - self.j(u_ks_drop, c_ks)
-                    )
-                    if len(u_ks.coefficients) != len(u_ks_new.coefficients):
-                        # Restart Quasi Newton procedure
-                        storage = []
-                        gamma_minus = 0
-                        gamma_plus = np.inf
-                        full_parameters = np.hstack((parameters.flatten(), c_ks))
-                        grad = self.grad_j_N(full_parameters)
-                else:
-                    u_ks = u_ks_new.copy()
-                    c_ks = c_ks_new
-                    parameters = u_ks.to_matrix()
-                    grad = grad_new.copy()
+                # # Perform drop and local merging
+                # if False:  #  s % drop_frequency == 0:
+                #     u_ks_drop, dropped = self.drop_step(u_ks_new, c_ks_new)
+                #     dropped_tot += dropped
+                #     parameters, u_ks, radii = self.local_merging_update_radii(
+                #         u_ks_drop, c_ks_new
+                #     )
+                #     c_ks = c_ks_new
+                #     epsilon_ks = epsilon_ks + 0.5 * (
+                #         self.j(u_ks, c_ks) - self.j(u_ks_drop, c_ks)
+                #     )
+                #     if len(u_ks.coefficients) != len(u_ks_new.coefficients):
+                #         # Restart Quasi Newton procedure
+                #         storage = []
+                #         gamma_minus = 0
+                #         gamma_plus = np.inf
+                #         full_parameters = np.hstack((parameters.flatten(), c_ks))
+                #         grad = self.grad_j_N(full_parameters)
+                #     else:
+                #         full_parameters = np.hstack((parameters.flatten(), c_ks))
+                #         grad = grad_new.copy()
+                # else:
+                u_ks = u_ks_new.copy()
+                c_ks = c_ks_new
+                parameters = parameters_new.copy()
+                full_parameters = full_parameters_new.copy()
+                grad = grad_new.copy()
                 local_M = float(self.j(u_ks, c_ks) / self.alpha)
                 p_u_ks = self.p(u_ks, c_ks)
                 q_u_ks = self.g(u_ks.coefficients) - u_ks.duality_pairing(p_u_ks)
@@ -991,7 +976,7 @@ class NLGCG:
                 objective_values.append(self.j(u_ks, c_ks))
                 epsilons.append(epsilon_ks)
                 logging.info(
-                    f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, objective: {self.j_N(np.hstack((parameters.flatten(), c_ks))):.14E}"
+                    f"{k}, {s}: Globalization: {newton_choice}, support: {len(u_ks.support)}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, objective: {self.j_N(full_parameters):.14E}"
                 )
                 s += 1
                 if s == self.max_inner_loop:
@@ -1000,21 +985,21 @@ class NLGCG:
                     )
                     break
 
-            if optimal:
-                u = u_ks.copy()
-                c = c_ks
-                times.append(time.time() - initial_time)
-                supports.append(len(u.support))
-                inner_loop.append(0)
-                objective_values.append(self.j(u, c))
-                epsilons.append(epsilon_ks)
-                logging.info(
-                    f"{k} optimal: support: {len(u.support)}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, grad_norm: {grad_norm:.2E} c_raw: {self.C_raw}, objective: {self.j(u, c):.14E}"
-                )
-                logging.info(
-                    "============================================================================================="
-                )
-                break
+            # if optimal:
+            #     u = u_ks.copy()
+            #     c = c_ks
+            #     times.append(time.time() - initial_time)
+            #     supports.append(len(u.support))
+            #     inner_loop.append(0)
+            #     objective_values.append(self.j(u, c))
+            #     epsilons.append(epsilon_ks)
+            #     logging.info(
+            #         f"{k} optimal: support: {len(u.support)}, epsilon: {epsilon_ks:.2E}, criterion: {phi_numerical:.2E}, grad_norm: {grad_norm:.2E} c_raw: {self.C_raw}, objective: {self.j(u, c):.14E}"
+            #     )
+            #     logging.info(
+            #         "============================================================================================="
+            #     )
+            #     break
 
             all_iterates = [
                 (u_ks, c_ks),
@@ -1026,9 +1011,6 @@ class NLGCG:
             iterate_values = [self.j(*iterate) for iterate in all_iterates]
             choice_index = np.argmin(iterate_values)
             u, c = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
-            # if True:
-            #     # Only for quadratic loss, set optimal constant
-            #     c = float(-np.mean(u.duality_pairing(self.kernel) - self.target))
             u, c, finite_psi = self.finite_dimensional_step(
                 u,
                 c,
