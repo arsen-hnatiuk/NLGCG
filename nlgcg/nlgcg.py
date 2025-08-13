@@ -26,6 +26,8 @@ class NLGCG:
         f: Callable,  # Diligence function
         grad_f: Callable,
         hess_f: Callable,
+        grad_f_N: Callable,
+        hess_f_N: Callable,
         j: Callable,  # Objective
         j_N: Callable,  # parameterized objective
         p: Callable,  # Dual variable
@@ -63,6 +65,8 @@ class NLGCG:
         self.f = f
         self.grad_f = grad_f
         self.hess_f = hess_f
+        self.grad_f_N = grad_f_N
+        self.hess_f_N = hess_f_N
         self.Omega = Omega  # Example [[0,1],[1,2]] for [0,1]x[1,2]
         self.max_radius = 1
         self.j = j
@@ -613,6 +617,179 @@ class NLGCG:
             gamma_plus,
         )
 
+    def H(
+        self,
+        normal_map_vector: np.ndarray,
+        prox_q: np.ndarray,
+        tau: float,
+        lbda: float = 1,
+    ) -> float:
+        return (
+            self.j_N(prox_q) + tau * lbda * 0.5 * np.linalg.norm(normal_map_vector) ** 2
+        )
+
+    def normal_map(
+        self, q: np.ndarray, prox_q: np.ndarray, lbda: float = 1
+    ) -> np.ndarray:
+        grad_f_prox_q = self.grad_f_N(prox_q)
+        return grad_f_prox_q + (q - prox_q) / lbda
+
+    def prox_and_grad(self, q: np.ndarray, lbda: float = 1) -> tuple:
+        prox_val = np.zeros(q.shape)
+        prox_grad = np.zeros(q.shape)
+        for i, val in enumerate(q):
+            if i % (self.Omega.shape[0] + 1):
+                # Not coefficient: not regularized
+                prox_val[i] = val
+                prox_grad[i] = 1
+            else:
+                if np.abs(val) > self.alpha:
+                    prox_val[i] = val - lbda * self.alpha * np.sign(val)
+                    prox_grad[i] = 1
+        return prox_val, prox_grad
+
+    def trust_region_ssn(
+        self,
+        params: np.ndarray,
+        normal_map_vector: np.ndarray,
+        prox_q: np.ndarray,
+        D_diagonal: np.ndarray,
+        delta: float,
+        H_value: float,
+        n_s: int,
+        lbda: float = 1.0,
+    ) -> tuple:
+        # https://arxiv.org/pdf/2106.09340
+        L = 10
+        tau = 0.1 / (lbda**2 * L**2 + 2)
+        nu = 0.5 * min(tau, 0.05 * (1 - 0.5 * tau * (0.5 * L**2 * lbda**2 + 1)))
+
+        opposite_D_diagonal = np.ones_like(D_diagonal) - D_diagonal
+        hess_q = self.hess_f_N(prox_q)
+        normal_map_norm = np.linalg.norm(normal_map_vector)
+        hess_D = np.multiply(D_diagonal, hess_q)  # B*D
+        S_matrix = np.multiply(D_diagonal, hess_D.T).T  # D^T*B*D
+        m = (
+            lambda q: normal_map_vector @ np.multiply(D_diagonal, q)
+            + 0.5 * (S_matrix @ q) @ q
+        )
+        g_vector = np.multiply(D_diagonal, normal_map_vector)
+        eps = min(normal_map_norm**2.5, 0.01)
+
+        q_bar = self.steihaug_cg(S_matrix, g_vector, eps, delta, m)
+        s_bar = (
+            q_bar
+            - lbda * (normal_map_vector + hess_D @ q_bar)
+            - np.multiply(opposite_D_diagonal, q_bar)
+        )
+        s = min(1, delta / np.linalg.norm(s_bar)) * s_bar
+        params_plus = params + s
+        prox_q_plus, D_diagonal_plus = self.prox_and_grad(params_plus, lbda)
+        normal_map_vector_plus = self.normal_map(params_plus, prox_q_plus, lbda)
+        H_value_plus = self.H(normal_map_vector_plus, prox_q_plus, tau, lbda)
+
+        a_red = H_value_plus - H_value
+        if n_s:
+            nu_k = min(
+                nu,
+                0.001
+                * n_s**0.2
+                * np.log(n_s) ** 0.4
+                * np.linalg.norm(prox_q_plus - params) ** 0.2,
+            )
+        else:
+            nu_k = nu
+        p_red = 0.5 * tau * normal_map_norm * min(
+            lbda, delta, lbda * normal_map_norm
+        ) + nu_k * normal_map_norm * np.linag.norm(prox_q_plus - prox_q) ** 2 / min(
+            delta, lbda * normal_map_norm
+        )
+        rho = a_red / p_red
+
+        if rho < 1e-6:
+            delta = max(0.01, 0.25 * delta)
+            choice = "Redc"
+        else:
+            n_s += 1
+            params = params_plus
+            normal_map_vector = normal_map_vector_plus
+            prox_q = prox_q_plus
+            D_diagonal = D_diagonal_plus
+            H_value = H_value_plus
+            if rho < 0.75:
+                choice = "Keep"
+            else:
+                delta = 2 * delta
+                choice = "Incr"
+        return (
+            params,
+            choice,
+            normal_map_vector,
+            prox_q,
+            D_diagonal,
+            delta,
+            H_value,
+            n_s,
+        )
+
+    def constraint_finder(self, q: np.ndarray, p: np.ndarray, delta: float) -> tuple:
+        q_q = q @ q
+        p_p = p @ p
+        q_p = q @ p
+        a_negative = (-q_p - np.sqrt((q_p) ** 2 - (q_q - delta**2) * p_p)) / (p_p)
+        a_positive = (-q_p + np.sqrt((q_p) ** 2 - (q_q - delta**2) * p_p)) / (p_p)
+        return a_negative, a_positive
+
+    def steihaug_cg(
+        self,
+        S_matrix: np.ndarray,
+        g_vector: np.ndarray,
+        eps: float,
+        delta: float,
+        m: Callable,
+    ) -> np.ndarray:
+        r = g_vector
+        q = np.zeros_like(g_vector)
+        p = -g_vector
+        if np.linalg.norm(r) < eps:
+            return q
+        i = 0
+        while i < len(g_vector):
+            S_p = S_matrix @ p
+            p_S_p = S_p @ p
+            if p_S_p <= 0:
+                a_minus, a_plus = self.constraint_finder(q, p, delta)
+                q_minus = q + a_minus * p
+                q_plus = q + a_plus * p
+                m_q_minus = m(q_minus)
+                m_q_plus = m(q_plus)
+                if m_q_minus < m_q_plus:
+                    return q_minus
+                else:
+                    return q_plus
+            r_r = r @ r
+            a = r_r / p_S_p
+            q_plus = q + a * p
+            if np.linalg.norm(q_plus) > delta:
+                a_minus, a_plus = self.constraint_finder(q, p, delta)
+                if a_plus >= 0:
+                    return q + a_plus * p
+                elif a_minus >= 0:
+                    return q + a_minus * p
+                else:
+                    return
+            r_plus = r + a * S_p
+            if np.linalg.norm(r_plus) < eps:
+                return q_plus
+            beta = r_plus @ r_plus / r_r
+            p_plus = -r_plus + beta * p
+
+            q = q_plus.copy()
+            r = r_plus.copy()
+            p = p_plus.copy()
+            i += 1
+        return q
+
     def lgcg_step(
         self,
         p_u: Callable,
@@ -801,6 +978,7 @@ class NLGCG:
         mode: str = "deterministic",
         inner_mode: str = "newton",
         inner_tol: float = 1e4,
+        lbda: int = 1,
     ) -> tuple:
         self.max_radius = max_radius
         self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
@@ -855,6 +1033,13 @@ class NLGCG:
             gamma_minus = 0
             gamma_plus = np.inf
             full_parameters = np.hstack((parameters.flatten(), c_ks))
+            prox_q, D_diagonal = self.prox_and_grad(full_parameters, lbda)
+            normal_map_vector = self.normal_map(full_parameters, prox_q, lbda)
+            delta = min(self.max_radius, 0.5 * np.linalg.norm(normal_map_vector))
+            H_value = self.H(
+                normal_map_vector, prox_q, 0.1 / (lbda**2 * 10**2 + 2), lbda
+            )
+            n_s = 0
             grad = self.grad_j_N(full_parameters)
             if len(u_ks.coefficients) and phi_numerical < inner_tol:
                 logging.info(
@@ -916,6 +1101,26 @@ class NLGCG:
                     ) = self.globalized_lbfgs(
                         full_parameters, grad, storage, gamma_minus, gamma_plus
                     )
+                elif inner_mode == "trust_region_ssn":
+                    (
+                        full_parameters_new,
+                        newton_choice,
+                        normal_map_vector,
+                        prox_q,
+                        D_diagonal,
+                        delta,
+                        H_value,
+                        n_s,
+                    ) = self.trust_region_ssn(
+                        full_parameters,
+                        normal_map_vector,
+                        prox_q,
+                        D_diagonal,
+                        delta,
+                        H_value,
+                        n_s,
+                        lbda,
+                    )
                 parameters_new = full_parameters_new[:-1].reshape(parameters.shape)
                 c_ks_new = full_parameters_new[-1]
                 u_ks_new = Measure(matrix=parameters_new)
@@ -956,6 +1161,13 @@ class NLGCG:
                 #         gamma_plus = np.inf
                 #         full_parameters = np.hstack((parameters.flatten(), c_ks))
                 #         grad = self.grad_j_N(full_parameters)
+                # prox_q, D_diagonal = self.prox_and_grad(full_parameters, lbda)
+                # normal_map_vector = self.normal_map(full_parameters, prox_q, lbda)
+                # delta = min(self.max_radius, 0.5 * np.linalg.norm(normal_map_vector))
+                # H_value = self.H(
+                #     normal_map_vector, prox_q, 0.1 / (lbda**2 * 10**2 + 2), lbda
+                # )
+                # n_s = 0
                 #     else:
                 #         full_parameters = np.hstack((parameters.flatten(), c_ks))
                 #         grad = grad_new.copy()
