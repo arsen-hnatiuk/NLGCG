@@ -54,6 +54,7 @@ class NLGCG:
         quasi_newton_storage: int = 5,
         lbfgs_c_0: float = 1e-4,
         wolfe_powell_constant: float = 0.9,
+        min_radius: float = 0.01,  # For Trust Region
     ) -> None:
         self.target = target
         self.kernel = kernel
@@ -101,6 +102,7 @@ class NLGCG:
         self.lbfgs_c_1 = 1
         self.lbfgs_c_2 = 1 / (2 * self.quasi_newton_storage + 3)
         self.wolfe_powell_constant = wolfe_powell_constant
+        self.min_radius = min_radius
 
     def project_into_domain(
         self, x: Union[np.ndarray, jaxlib.xla_extension.ArrayImpl]
@@ -676,6 +678,15 @@ class NLGCG:
         g_vector = np.multiply(D_diagonal, normal_map_vector)
         eps = min(normal_map_norm**2.5, 0.01)
 
+        # if len(params) > 10:
+        #     logging.info("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+        #     logging.info(S_matrix)
+        #     logging.info(g_vector)
+        #     logging.info(eps)
+        #     logging.info(delta)
+        #     logging.info(D_diagonal)
+        #     logging.info(normal_map_vector)
+        #     logging.info("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
         q_bar = self.steihaug_cg(S_matrix, g_vector, eps, delta, m)
         s_bar = (
             q_bar
@@ -688,7 +699,7 @@ class NLGCG:
         normal_map_vector_plus = self.normal_map(params_plus, prox_q_plus, lbda)
         H_value_plus = self.H(normal_map_vector_plus, prox_q_plus, tau, lbda)
 
-        a_red = H_value_plus - H_value
+        a_red = H_value - H_value_plus
         if n_s:
             nu_k = min(
                 nu,
@@ -701,13 +712,13 @@ class NLGCG:
             nu_k = nu
         p_red = 0.5 * tau * normal_map_norm * min(
             lbda, delta, lbda * normal_map_norm
-        ) + nu_k * normal_map_norm * np.linag.norm(prox_q_plus - prox_q) ** 2 / min(
+        ) + nu_k * normal_map_norm * np.linalg.norm(prox_q_plus - prox_q) ** 2 / min(
             delta, lbda * normal_map_norm
         )
         rho = a_red / p_red
 
         if rho < 1e-6:
-            delta = max(0.01, 0.25 * delta)
+            delta *= 0.25  # max(0.01, 0.25 * delta)
             choice = "Redc"
         else:
             n_s += 1
@@ -748,12 +759,15 @@ class NLGCG:
         delta: float,
         m: Callable,
     ) -> np.ndarray:
+        i = 0
         r = g_vector
         q = np.zeros_like(g_vector)
         p = -g_vector
         if np.linalg.norm(r) < eps:
+            logging.info(
+                f"Steihaug: {i} iterations, delta {delta}, norm {np.linalg.norm(q)}, norm r {np.linalg.norm(r)}, eps {eps}"
+            )
             return q
-        i = 0
         while i < len(g_vector):
             S_p = S_matrix @ p
             p_S_p = S_p @ p
@@ -764,8 +778,14 @@ class NLGCG:
                 m_q_minus = m(q_minus)
                 m_q_plus = m(q_plus)
                 if m_q_minus < m_q_plus:
+                    logging.info(
+                        f"Steihaug: {i} iterations, delta {delta}, norm {np.linalg.norm(q_minus)}, norm r {np.linalg.norm(r)}, eps {eps}"
+                    )
                     return q_minus
                 else:
+                    logging.info(
+                        f"Steihaug: {i} iterations, delta {delta}, norm {np.linalg.norm(q_plus)}, norm r {np.linalg.norm(r)}, eps {eps}"
+                    )
                     return q_plus
             r_r = r @ r
             a = r_r / p_S_p
@@ -773,13 +793,22 @@ class NLGCG:
             if np.linalg.norm(q_plus) > delta:
                 a_minus, a_plus = self.constraint_finder(q, p, delta)
                 if a_plus >= 0:
+                    logging.info(
+                        f"Steihaug: {i} iterations, delta {delta}, norm {np.linalg.norm(q+a_plus*p)}, norm r {np.linalg.norm(r)}, eps {eps}"
+                    )
                     return q + a_plus * p
                 elif a_minus >= 0:
+                    logging.info(
+                        f"Steihaug: {i} iterations, delta {delta}, norm {np.linalg.norm(q+a_minus*p)}, norm r {np.linalg.norm(r)}, eps {eps}"
+                    )
                     return q + a_minus * p
                 else:
                     return
             r_plus = r + a * S_p
             if np.linalg.norm(r_plus) < eps:
+                logging.info(
+                    f"Steihaug: {i} iterations, delta {delta}, norm {np.linalg.norm(q_plus)}, norm r {np.linalg.norm(r_plus)}, eps {eps}"
+                )
                 return q_plus
             beta = r_plus @ r_plus / r_r
             p_plus = -r_plus + beta * p
@@ -788,6 +817,9 @@ class NLGCG:
             r = r_plus.copy()
             p = p_plus.copy()
             i += 1
+        logging.info(
+            f"Steihaug: {i} iterations, delta {delta}, norm {np.linalg.norm(q)}, norm r {np.linalg.norm(r)}, eps {eps}"
+        )
         return q
 
     def lgcg_step(
@@ -895,25 +927,25 @@ class NLGCG:
         # M test
         output_bools.append(bool(np.linalg.norm(coefs_new, ord=1) <= local_M))
 
-        # Sign test
-        bad_signs = np.where(np.sign(coefs_new) != np.sign(coefs))[0]
-        if not len(bad_signs):
-            output_bools.append(True)
-        else:
-            output_bools.append(False)
-            # logging.info(parameters[bad_signs])
-            # logging.info(parameters_new[bad_signs])
+        # # Sign test
+        # bad_signs = np.where(np.sign(coefs_new) != np.sign(coefs))[0]
+        # if not len(bad_signs):
+        #     output_bools.append(True)
+        # else:
+        #     output_bools.append(False)
+        #     # logging.info(parameters[bad_signs])
+        #     # logging.info(parameters_new[bad_signs])
 
-        # Absolute descent test
-        full_parameters = np.hstack((parameters.flatten(), c))
-        full_parameters_new = np.hstack((parameters_new.flatten(), c_new))
-        j_N_diff = self.j_N(full_parameters_new) - self.j_N(full_parameters)
-        if choice == "Grad" and j_N_diff >= -self.machine_precision:
-            output_bools.append(False)
-        elif j_N_diff >= 0:
-            output_bools.append(False)
-        else:
-            output_bools.append(True)
+        # # Absolute descent test
+        # full_parameters = np.hstack((parameters.flatten(), c))
+        # full_parameters_new = np.hstack((parameters_new.flatten(), c_new))
+        # j_N_diff = self.j_N(full_parameters_new) - self.j_N(full_parameters)
+        # if choice == "Grad" and j_N_diff >= -self.machine_precision:
+        #     output_bools.append(False)
+        # elif j_N_diff >= 0:
+        #     output_bools.append(False)
+        # else:
+        #     output_bools.append(True)
 
         return output_bools
 
@@ -1035,7 +1067,7 @@ class NLGCG:
             full_parameters = np.hstack((parameters.flatten(), c_ks))
             prox_q, D_diagonal = self.prox_and_grad(full_parameters, lbda)
             normal_map_vector = self.normal_map(full_parameters, prox_q, lbda)
-            delta = min(self.max_radius, 0.5 * np.linalg.norm(normal_map_vector))
+            delta = min(self.min_radius, 0.5 * np.linalg.norm(normal_map_vector))
             H_value = self.H(
                 normal_map_vector, prox_q, 0.1 / (lbda**2 * 10**2 + 2), lbda
             )
@@ -1102,6 +1134,7 @@ class NLGCG:
                         full_parameters, grad, storage, gamma_minus, gamma_plus
                     )
                 elif inner_mode == "trust_region_ssn":
+                    logging.info(full_parameters)
                     (
                         full_parameters_new,
                         newton_choice,
@@ -1121,6 +1154,7 @@ class NLGCG:
                         n_s,
                         lbda,
                     )
+                    grad_new = self.grad_j_N(full_parameters_new)
                 parameters_new = full_parameters_new[:-1].reshape(parameters.shape)
                 c_ks_new = full_parameters_new[-1]
                 u_ks_new = Measure(matrix=parameters_new)
@@ -1195,6 +1229,7 @@ class NLGCG:
                     logging.info(
                         "Too many iterations in the inner loop, stopping the process"
                     )
+                    logging.info(f"Grad: {np.linalg.norm(grad):.3E}")
                     break
 
             # if optimal:
@@ -1221,7 +1256,7 @@ class NLGCG:
                 (u_lm, c_lm),
             ]
             iterate_values = [self.j(*iterate) for iterate in all_iterates]
-            choice_index = np.argmin(iterate_values)
+            choice_index = np.nanargmin(iterate_values)
             u, c = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
             u, c, finite_psi = self.finite_dimensional_step(
                 u,
