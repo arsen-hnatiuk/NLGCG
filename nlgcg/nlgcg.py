@@ -477,13 +477,20 @@ class NLGCG:
         gradient: np.ndarray,
         choice: str,
     ) -> tuple:
+        t = time.time()
         sigma = 1  #  max(1, 1 / np.linalg.norm(direction))
         j_N_init = self.j_N(full_parameters)
+        logging.info(f"j_N: {time.time()- t}")
+        t = time.time()
         desired_descent = self.armijo_constant * gradient @ direction
+        logging.info(f"descent: {time.time()- t}")
+        t = time.time()
         if choice == "Grad" and desired_descent > -self.machine_precision:
             return full_parameters.copy(), -1
         full_parameters_new = full_parameters + (sigma * direction)
         j_N_new = self.j_N(full_parameters_new)
+        logging.info(f"middle: {time.time()- t}")
+        t = time.time()
         if jnp.isnan(j_N_new):
             j_N_new = j_N_init + 1
         while j_N_new - j_N_init > sigma * desired_descent:
@@ -496,6 +503,7 @@ class NLGCG:
             j_N_new = self.j_N(full_parameters_new)
             if jnp.isnan(j_N_new):
                 j_N_new = j_N_init + 1
+        logging.info(f"loop: {time.time()- t}")
         return np.array(full_parameters_new), sigma
 
     def globalized_newton_step(
@@ -505,18 +513,32 @@ class NLGCG:
         # grad_j_N_z = self.grad_j_N(full_parameters)
         hess = self.hess_j_N(full_parameters)
         try:
-            update_direction = np.linalg.solve(hess, -grad)
-            update_norm = np.linalg.norm(update_direction)
-            grad_direction = -grad @ update_direction
-            condition = (
-                grad_direction >= self.descent_constant * update_norm**self.newton_p
+            t = time.time()
+            update_direction = jnp.linalg.solve(hess, -grad)
+            logging.info(f"inv: {time.time() - t}")
+            t = time.time()
+            update_norm = jnp.linalg.norm(update_direction)
+            logging.info(f"norm: {time.time() - t}")
+            t = time.time()
+            grad_direction = -jnp.matmul(grad, update_direction)
+            logging.info(f"gad_direction: {time.time() - t}")
+            t = time.time()
+            condition = grad_direction >= self.descent_constant * jnp.power(
+                update_norm, self.newton_p
             )
-            if not condition:
+            logging.info(f"condition: {time.time() - t}")
+            t = time.time()
+            # logging.info(type(condition))
+            # logging.info(condition)
+
+            if not jnp.any(condition):
+                logging.info(f"condition check {time.time() - t}")
                 raise np.linalg.LinAlgError("Insufficient descent in Newton direction")
             choice = "Newt"
         except np.linalg.LinAlgError:
             update_direction = -grad.copy()
             choice = "Grad"
+        t = time.time()
         if any(jnp.isnan(update_direction)):
             return full_parameters, "NAN in update direction", 1
         full_parameters_new, sigma = self.armijo(
@@ -527,6 +549,7 @@ class NLGCG:
         #     full_parameters_new[:-1].reshape(parameters.shape)
         # )
         # parameters_new = full_parameters_new[:-1].reshape(parameters.shape)
+        logging.info(f"armijo {time.time()-t}")
         return full_parameters_new, choice, sigma
 
     def q_function(self, s: np.ndarray, y: np.ndarray) -> float:
@@ -733,7 +756,7 @@ class NLGCG:
                 delta = 2 * delta
                 choice = "Incr"
         return (
-            params,
+            params,  # TODO return prox_q
             choice,
             normal_map_vector,
             prox_q,
@@ -927,25 +950,25 @@ class NLGCG:
         # M test
         output_bools.append(bool(np.linalg.norm(coefs_new, ord=1) <= local_M))
 
-        # # Sign test
-        # bad_signs = np.where(np.sign(coefs_new) != np.sign(coefs))[0]
-        # if not len(bad_signs):
-        #     output_bools.append(True)
-        # else:
-        #     output_bools.append(False)
-        #     # logging.info(parameters[bad_signs])
-        #     # logging.info(parameters_new[bad_signs])
+        # Sign test
+        bad_signs = np.where(np.sign(coefs_new) != np.sign(coefs))[0]
+        if not len(bad_signs):
+            output_bools.append(True)
+        else:
+            output_bools.append(False)
+            # logging.info(parameters[bad_signs])
+            # logging.info(parameters_new[bad_signs])
 
-        # # Absolute descent test
-        # full_parameters = np.hstack((parameters.flatten(), c))
-        # full_parameters_new = np.hstack((parameters_new.flatten(), c_new))
-        # j_N_diff = self.j_N(full_parameters_new) - self.j_N(full_parameters)
-        # if choice == "Grad" and j_N_diff >= -self.machine_precision:
-        #     output_bools.append(False)
-        # elif j_N_diff >= 0:
-        #     output_bools.append(False)
-        # else:
-        #     output_bools.append(True)
+        # Absolute descent test
+        full_parameters = np.hstack((parameters.flatten(), c))
+        full_parameters_new = np.hstack((parameters_new.flatten(), c_new))
+        j_N_diff = self.j_N(full_parameters_new) - self.j_N(full_parameters)
+        if choice == "Grad" and j_N_diff >= -self.machine_precision:
+            output_bools.append(False)
+        elif j_N_diff >= 0:
+            output_bools.append(False)
+        else:
+            output_bools.append(True)
 
         return output_bools
 
@@ -1061,17 +1084,17 @@ class NLGCG:
 
             s = 1
             sigma = 0
-            storage = []
-            gamma_minus = 0
-            gamma_plus = np.inf
             full_parameters = np.hstack((parameters.flatten(), c_ks))
-            prox_q, D_diagonal = self.prox_and_grad(full_parameters, lbda)
-            normal_map_vector = self.normal_map(full_parameters, prox_q, lbda)
-            delta = min(self.min_radius, 0.5 * np.linalg.norm(normal_map_vector))
-            H_value = self.H(
-                normal_map_vector, prox_q, 0.1 / (lbda**2 * 10**2 + 2), lbda
-            )
-            n_s = 0
+            # storage = []
+            # gamma_minus = 0
+            # gamma_plus = np.inf
+            # prox_q, D_diagonal = self.prox_and_grad(full_parameters, lbda)
+            # normal_map_vector = self.normal_map(full_parameters, prox_q, lbda)
+            # delta = min(self.min_radius, 0.5 * np.linalg.norm(normal_map_vector))
+            # H_value = self.H(
+            #     normal_map_vector, prox_q, 0.1 / (lbda**2 * 10**2 + 2), lbda
+            # )  # TODO tau
+            # n_s = 0
             grad = self.grad_j_N(full_parameters)
             if len(u_ks.coefficients) and phi_numerical < inner_tol:
                 logging.info(
