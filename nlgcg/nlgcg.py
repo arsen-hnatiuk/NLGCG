@@ -511,7 +511,9 @@ class NLGCG:
     ) -> tuple:
         # full_parameters = np.hstack((parameters.flatten(), np.array([c])))
         # grad_j_N_z = self.grad_j_N(full_parameters)
-        hess = self.hess_j_N(full_parameters)
+        t = time.time()
+        hess = self.hess_j_N(full_parameters).block_until_ready()
+        logging.info(f"hess: {time.time() - t}")
         try:
             t = time.time()
             update_direction = jnp.linalg.solve(hess, -grad)
