@@ -126,9 +126,17 @@ class SSN:
         initial_j = self.j(u_0)
         q = u_0  #  + self.p(u_0)
         prox_q = self.prox(q)  # The actual iterate
-        psi_val = self.Psi(q)
+        psi_val = min(self.Psi(prox_q), self.Psi(q))
         k = 0
         while psi_val > tol or self.j(prox_q) > initial_j:
+            if k > self.maximum_iterations:
+                logging.info(
+                    f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {psi_val:.3E} achieved"
+                )
+                if self.j(prox_q) <= initial_j:
+                    return prox_q
+                else:
+                    return u_0
             right_hand = q - prox_q - self.p(prox_q)
             left_hand = Id + (self.hessian(prox_q) - Id) @ self.grad_prox(q)
             theta = theta / 10
@@ -139,7 +147,7 @@ class SSN:
                     direction = np.linalg.solve(left_hand + theta * Id, right_hand)
                 except np.linalg.LinAlgError:
                     logging.info(
-                        f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {self.Psi(prox_q):.3E} achieved"
+                        f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {psi_val:.3E} achieved"
                     )
                     if self.j(prox_q) <= initial_j:
                         return prox_q
@@ -153,19 +161,14 @@ class SSN:
             self.M = float(min(self.M, self.j(prox_q) / self.alpha))
             psi_val = self.Psi(prox_q)
             k += 1
-            if k > self.maximum_iterations:
-                logging.info(
-                    f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {self.Psi(prox_q):.3E} achieved"
-                )
-                if self.j(prox_q) <= initial_j:
-                    return prox_q
-                else:
-                    return u_0
 
         logging.info(
             f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
         )
-        return prox_q
+        if self.j(prox_q) <= initial_j:
+            return prox_q
+        else:
+            return u_0
 
 
 # if __name__ == "__main__":
