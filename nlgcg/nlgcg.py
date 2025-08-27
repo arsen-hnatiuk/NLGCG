@@ -178,136 +178,192 @@ class NLGCG:
         radius: float,
         mode: str = "deterministic",
     ) -> tuple:
+        success = False
         p_norm = lambda x: np.abs(np.array(np.nan_to_num(p_u(x))))
 
-        if mode == "stochastic":
-            grid = self.sample_domain(self.lazy_sample, u)
-            if len(u.support):
-                grid = np.vstack((grid, u.support))
-            grid_vals = p_norm(grid)
-            max_ind = np.argmax(grid_vals)
-            best_val = grid_vals[max_ind]
-            best_point = grid[max_ind]
-            phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
-            if phi_val >= epsilon:
-                success = True  # Found a desired point
-            else:
-                lazy_grid = grid.copy()
-                lazy_grid_vals = grid_vals.copy()
-                grid = self.sample_domain(self.exact_sample, u)
-                grid_vals = p_norm(grid)
-                grid = np.vstack((grid, lazy_grid))
-                grid_vals = np.hstack((grid_vals, lazy_grid_vals))
-                max_ind = np.argmax(grid_vals)
-                best_val = grid_vals[max_ind]
-                best_point = grid[max_ind]
-                phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
-                if phi_val >= epsilon:
-                    success = True  # Found a desired point
-                else:
-                    success = False
-        else:
-            grad_p = self.grad_p(u, c)
-            hess_p = self.hess_p(u, c)
+        # if mode == "stochastic":
+        #     grid = self.sample_domain(self.lazy_sample, u)
+        #     if len(u.support):
+        #         grid = np.vstack((grid, u.support))
+        #     grid_vals = p_norm(grid)
+        #     max_ind = np.argmax(grid_vals)
+        #     best_val = grid_vals[max_ind]
+        #     best_point = grid[max_ind]
+        #     phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
+        #     if phi_val >= epsilon:
+        #         success = True  # Found a desired point
+        #     else:
+        #         lazy_grid = grid.copy()
+        #         lazy_grid_vals = grid_vals.copy()
+        #         grid = self.sample_domain(self.exact_sample, u)
+        #         grid_vals = p_norm(grid)
+        #         grid = np.vstack((grid, lazy_grid))
+        #         grid_vals = np.hstack((grid_vals, lazy_grid_vals))
+        #         max_ind = np.argmax(grid_vals)
+        #         best_val = grid_vals[max_ind]
+        #         best_point = grid[max_ind]
+        #         phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
+        #         if phi_val >= epsilon:
+        #             success = True  # Found a desired point
+        #         else:
+        #             success = False
+        # else:
+
+        if mode == "deterministic":
             grid = self.get_grid(u)
-            optimize_grid = np.array([True] * grid.shape[0])
-            grid_vals = p_norm(grid)
-            max_ind = np.argmax(grid_vals)
-            best_val = grid_vals[max_ind]
-            best_point = grid[max_ind].copy()
+        elif mode == "stochastic":
+            first_sample = self.sample_domain(1000, u)
+            first_sample_vals = p_norm(first_sample)
+            first_order_indices = np.argsort(first_sample_vals)[::-1][:100]
+            best_val = first_sample_vals[first_order_indices[0]]
+            best_point = first_sample[first_order_indices[0]]
             phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
-            point_steps = 0
-            while point_steps < self.stop_search and phi_val < epsilon:
-                batching_factor = (
-                    len(self.target) * self.Omega.shape[0] * (self.Omega.shape[0] + 1)
-                    + 2 * self.Omega.shape[0]
-                    + 1
-                )
-                batch_size = int(self.batching_constant // batching_factor)
-                for batch in gen_batches(len(grid), batch_size):
-                    if phi_val >= epsilon:
-                        break
-                    batch_points = grid[batch]
-                    optimize_batch = optimize_grid[batch]
-                    batch_vals = grid_vals[batch]
-                    new_points_plus = np.zeros(batch_points.shape)
-                    new_points_minus = np.zeros(batch_points.shape)
-                    gradients = grad_p(batch_points)
-                    hessians = hess_p(batch_points)
-                    for i, (point, gradient, hessian, optimize) in enumerate(
-                        zip(batch_points, gradients, hessians, optimize_batch)
-                    ):
-                        if optimize:
-                            try:
-                                d = np.linalg.solve(hessian, -gradient)  # Newton step
-                            except np.linalg.LinAlgError:
-                                d = 0.1 * gradient
-                        else:
-                            d = np.zeros_like(point)
-                        new_points_plus[i] = point + d
-                        new_points_minus[i] = point - d
-                    # projected_new_points_plus = new_points_plus.copy()
-                    projected_new_points_plus = self.project_into_domain(
-                        new_points_plus
-                    ).copy()
-                    # projected_new_points_minus = new_points_minus.copy()
-                    projected_new_points_minus = self.project_into_domain(
-                        new_points_minus
-                    ).copy()
-
-                    p_vals_plus = p_norm(projected_new_points_plus)
-                    p_vals_plus_invalid = np.isnan(p_vals_plus)
-                    p_vals_plus[p_vals_plus_invalid] = batch_vals[p_vals_plus_invalid]
-                    projected_new_points_plus[p_vals_plus_invalid] = batch_points[
-                        p_vals_plus_invalid
-                    ]
-
-                    p_vals_minus = p_norm(projected_new_points_minus)
-                    p_vals_minus_invalid = np.isnan(p_vals_minus)
-                    p_vals_minus[p_vals_minus_invalid] = batch_vals[
-                        p_vals_minus_invalid
-                    ]
-                    projected_new_points_minus[p_vals_minus_invalid] = batch_points[
-                        p_vals_minus_invalid
-                    ]
-
-                    plus_bigges_index = p_vals_plus > p_vals_minus
-                    p_vals = np.maximum(p_vals_plus, p_vals_minus)
-                    projected_new_points = np.zeros(batch_points.shape)
-                    projected_new_points[plus_bigges_index] = projected_new_points_plus[
-                        plus_bigges_index
-                    ]
-                    projected_new_points[~plus_bigges_index] = (
-                        projected_new_points_minus[~plus_bigges_index]
-                    )
-                    grid[batch] = projected_new_points
-                    grid_vals[batch] = p_vals
-                    optimize_grid[batch] = optimize_batch & ~(
-                        p_vals_plus_invalid & p_vals_minus_invalid
-                    )
-
-                    max_ind = np.argmax(p_vals)
-                    max_val = p_vals[max_ind]
-                    if max_val > best_val:
-                        best_val = max_val
-                        best_point = projected_new_points[max_ind].copy()
-                        phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
-                        if phi_val >= epsilon:
-                            break
-
-                    del new_points_plus
-                    del new_points_minus
-                    del projected_new_points
-                    del gradients
-                    del hessians
-                    del p_vals
-
-                point_steps += 1
-
             if phi_val >= epsilon:
-                success = True  # Found a desired point
-            else:
-                success = False
+                success = True
+                return self.post_process_global_search(
+                    success=success,
+                    grid=first_sample,
+                    grid_vals=first_sample_vals,
+                    best_point=best_point,
+                    best_val=best_val,
+                    radius=radius,
+                )
+
+            refinement_samples = 10
+            sample_start_points = np.repeat(
+                first_sample[first_order_indices],
+                [refinement_samples] * len(first_order_indices),
+                axis=0,
+            )
+            local_updates = np.tile(
+                np.random.multivariate_normal(
+                    mean=np.zeros(self.Omega.shape[0]),
+                    cov=0.01 * np.eye(self.Omega.shape[0]),
+                    size=refinement_samples,
+                ),
+                (len(first_order_indices), 1),
+            )
+            second_sample_raw = sample_start_points + local_updates
+            second_sample = second_sample_raw[
+                second_sample_raw[:, 0] > 0
+            ]  # check for pos variance
+            second_sample_vals = p_norm(second_sample)
+            second_order_indices = np.argsort(second_sample_vals)[::-1][:100]
+            grid = second_sample[second_order_indices]
+            if len(u.coefficients):
+                grid = np.vstack([grid, u.support])
+
+        grid_vals = p_norm(grid)
+        max_ind = np.argmax(grid_vals)
+        best_val = grid_vals[max_ind]
+        best_point = grid[max_ind].copy()
+        phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
+        if phi_val >= epsilon:
+            success = True
+            return self.post_process_global_search(
+                success, grid, grid_vals, best_point, best_val, radius
+            )
+
+        grad_p = self.grad_p(u, c)
+        hess_p = self.hess_p(u, c)
+        optimize_grid = np.array([True] * grid.shape[0])
+        point_steps = 0
+        while point_steps < self.stop_search:
+            batching_factor = (
+                len(self.target) * self.Omega.shape[0] * (self.Omega.shape[0] + 1)
+                + 2 * self.Omega.shape[0]
+                + 1
+            )
+            batch_size = int(self.batching_constant // batching_factor)
+            for batch in gen_batches(len(grid), batch_size):
+                optimize_batch = optimize_grid[batch]
+                batch_points = grid[batch][optimize_batch]
+                batch_vals = grid_vals[batch][optimize_batch]
+                new_points_plus = np.zeros(batch_points.shape)
+                new_points_minus = np.zeros(batch_points.shape)
+                gradients = grad_p(batch_points)
+                hessians = hess_p(batch_points)
+                for i, (point, gradient, hessian) in enumerate(
+                    zip(batch_points, gradients, hessians)
+                ):
+                    try:
+                        d = np.linalg.solve(hessian, -gradient)  # Newton step
+                    except np.linalg.LinAlgError:
+                        d = 0.1 * gradient
+                    new_points_plus[i] = point + d
+                    new_points_minus[i] = point - d
+                # projected_new_points_plus = new_points_plus.copy()
+                projected_new_points_plus = self.project_into_domain(
+                    new_points_plus
+                ).copy()
+                # projected_new_points_minus = new_points_minus.copy()
+                projected_new_points_minus = self.project_into_domain(
+                    new_points_minus
+                ).copy()
+
+                p_vals_plus = p_norm(projected_new_points_plus)
+                p_vals_plus_invalid = np.isnan(p_vals_plus)
+                p_vals_plus[p_vals_plus_invalid] = batch_vals[p_vals_plus_invalid]
+                projected_new_points_plus[p_vals_plus_invalid] = batch_points[
+                    p_vals_plus_invalid
+                ]
+
+                p_vals_minus = p_norm(projected_new_points_minus)
+                p_vals_minus_invalid = np.isnan(p_vals_minus)
+                p_vals_minus[p_vals_minus_invalid] = batch_vals[p_vals_minus_invalid]
+                projected_new_points_minus[p_vals_minus_invalid] = batch_points[
+                    p_vals_minus_invalid
+                ]
+
+                plus_bigges_index = p_vals_plus > p_vals_minus
+                p_vals = np.maximum(p_vals_plus, p_vals_minus)
+                projected_new_points = np.zeros(batch_points.shape)
+                projected_new_points[plus_bigges_index] = projected_new_points_plus[
+                    plus_bigges_index
+                ]
+                projected_new_points[~plus_bigges_index] = projected_new_points_minus[
+                    ~plus_bigges_index
+                ]
+                grid[batch][optimize_batch] = projected_new_points
+                grid_vals[batch][optimize_batch] = p_vals
+                optimize_grid[batch] = optimize_batch & ~(
+                    p_vals_plus_invalid & p_vals_minus_invalid
+                )
+
+                max_ind = np.argmax(p_vals)
+                max_val = p_vals[max_ind]
+                if max_val > best_val:
+                    best_val = max_val
+                    best_point = projected_new_points[max_ind].copy()
+                    phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
+                    if phi_val >= epsilon:
+                        success = True
+                        return self.post_process_global_search(
+                            success, grid, grid_vals, best_point, best_val, radius
+                        )
+
+                del new_points_plus
+                del new_points_minus
+                del projected_new_points
+                del gradients
+                del hessians
+                del p_vals
+
+            point_steps += 1
+
+        return self.post_process_global_search(
+            success, grid, grid_vals, best_point, best_val, radius
+        )
+
+    def post_process_global_search(
+        self,
+        success: bool,
+        grid: np.ndarray,
+        grid_vals: np.ndarray,
+        best_point: np.ndarray,
+        best_val: float,
+        radius: float,
+    ) -> tuple:
         valid_indices = np.where(
             np.logical_and(
                 grid_vals >= self.alpha,
@@ -546,71 +602,71 @@ class NLGCG:
             params = params_new.copy()
         return params
 
-    def globalized_ssn(
-        self, k: int, params: np.ndarray, support: float, lbda: float
-    ) -> np.ndarray:
-        for s in range(self.max_inner_loop):
-            local_M = float(self.j_N(params) / self.alpha)
-            grad = self.grad_j_N(params)
+    # def globalized_ssn(
+    #     self, k: int, params: np.ndarray, support: float, lbda: float
+    # ) -> np.ndarray:
+    #     for s in range(self.max_inner_loop):
+    #         local_M = float(self.j_N(params) / self.alpha)
+    #         grad = self.grad_j_N(params)
 
-            prox_params, D_diagonal = self.prox_and_grad(params, lbda)
-            normal_map_vector = self.normal_map(params, prox_params, lbda)
-            opposite_D_diagonal = np.ones_like(D_diagonal) - D_diagonal
-            g_vector = np.multiply(D_diagonal, normal_map_vector)
-            hess_D_g = jax.jvp(self.grad_f_N, (prox_params,), (g_vector,))[1]
-            S_g = np.multiply(D_diagonal, hess_D_g.T).T  # D^T*B*D*g
-            m = lambda x: 0
-            q_bar, steihaug_iters = self.steihaug_cg(
-                prox_params=prox_params,
-                D_diagonal=D_diagonal,
-                S_g=S_g,
-                g_vector=g_vector,
-                eps=self.machine_precision,
-                delta=1e200,
-                m=m,
-            )
-            D_q_bar = np.multiply(D_diagonal, q_bar)
-            hess_D_q_bar = jax.jvp(self.grad_f_N, (prox_params,), (D_q_bar,))[
-                1
-            ]  # B*D*q_bar
-            update_direction = (
-                q_bar
-                - lbda * (normal_map_vector + hess_D_q_bar)
-                - np.multiply(opposite_D_diagonal, q_bar)
-            )
+    #         prox_params, D_diagonal = self.prox_and_grad(params, lbda)
+    #         normal_map_vector = self.normal_map(params, prox_params, lbda)
+    #         opposite_D_diagonal = np.ones_like(D_diagonal) - D_diagonal
+    #         g_vector = np.multiply(D_diagonal, normal_map_vector)
+    #         hess_D_g = jax.jvp(self.grad_f_N, (prox_params,), (g_vector,))[1]
+    #         S_g = np.multiply(D_diagonal, hess_D_g.T).T  # D^T*B*D*g
+    #         m = lambda x: 0
+    #         q_bar, steihaug_iters = self.steihaug_cg(
+    #             prox_params=prox_params,
+    #             D_diagonal=D_diagonal,
+    #             S_g=S_g,
+    #             g_vector=g_vector,
+    #             eps=self.machine_precision,
+    #             delta=1e200,
+    #             m=m,
+    #         )
+    #         D_q_bar = np.multiply(D_diagonal, q_bar)
+    #         hess_D_q_bar = jax.jvp(self.grad_f_N, (prox_params,), (D_q_bar,))[
+    #             1
+    #         ]  # B*D*q_bar
+    #         update_direction = (
+    #             q_bar
+    #             - lbda * (normal_map_vector + hess_D_q_bar)
+    #             - np.multiply(opposite_D_diagonal, q_bar)
+    #         )
 
-            update_norm = np.linalg.norm(update_direction)
-            grad_direction = -np.matmul(grad, update_direction)
-            condition = grad_direction >= self.descent_constant * np.power(
-                update_norm, self.newton_p
-            )
-            if not np.any(condition) or any(np.isnan(update_direction)):
-                update_direction = -grad.copy()
-                choice = "Grad"
-            else:
-                choice = "Newt"
+    #         update_norm = np.linalg.norm(update_direction)
+    #         grad_direction = -np.matmul(grad, update_direction)
+    #         condition = grad_direction >= self.descent_constant * np.power(
+    #             update_norm, self.newton_p
+    #         )
+    #         if not np.any(condition) or any(np.isnan(update_direction)):
+    #             update_direction = -grad.copy()
+    #             choice = "Grad"
+    #         else:
+    #             choice = "Newt"
 
-            if any(np.isnan(update_direction)):
-                return params
-            params_new, sigma = self.armijo(params, update_direction, grad, choice)
+    #         if any(np.isnan(update_direction)):
+    #             return params
+    #         params_new, sigma = self.armijo(params, update_direction, grad, choice)
 
-            # Check validity of the newton step
-            domain_tests = self.domain_and_descent_tests(
-                params,
-                params_new,
-                local_M,
-                choice,
-            )
-            logging.info(
-                f"{k}, {s}: Globalization: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, objective: {self.j_N(params_new):.14E}"
-            )
-            if not all([domain_tests[i] for i in [0, 3]]):
-                logging.info(f"Domain tests: {domain_tests}")
-                if not domain_tests[-1]:
-                    logging.info(f"grad_norm: {np.linalg.norm(grad):.3E}")
-                return params
-            params = params_new.copy()
-        return params
+    #         # Check validity of the newton step
+    #         domain_tests = self.domain_and_descent_tests(
+    #             params,
+    #             params_new,
+    #             local_M,
+    #             choice,
+    #         )
+    #         logging.info(
+    #             f"{k}, {s}: Globalization: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, objective: {self.j_N(params_new):.14E}"
+    #         )
+    #         if not all([domain_tests[i] for i in [0, 3]]):
+    #             logging.info(f"Domain tests: {domain_tests}")
+    #             if not domain_tests[-1]:
+    #                 logging.info(f"grad_norm: {np.linalg.norm(grad):.3E}")
+    #             return params
+    #         params = params_new.copy()
+    #     return params
 
     def q_function(self, s: np.ndarray, y: np.ndarray) -> float:
         norm_s = s @ s
@@ -748,12 +804,9 @@ class NLGCG:
         # n_s = 0
 
         prox_params, D_diagonal = self.prox_and_grad(params, lbda)
-        # prox_params = params.copy()
-        # D_diagonal = np.zeros_like(prox_params)
         normal_map_vector = self.normal_map(params, prox_params, lbda)
         normal_map_norm = np.linalg.norm(normal_map_vector)
         delta = min(0.01, 0.5 * np.linalg.norm(normal_map_vector))
-        # delta = min(0.01, np.sqrt(phi_numerical))
         H_value = self.H(normal_map_vector, prox_params, tau, lbda)
 
         for s_iter in range(self.max_inner_loop):
@@ -933,10 +986,15 @@ class NLGCG:
             radius = np.max(radii)
         else:
             radius = self.max_radius
+        # x_k, found_points, global_valid = self.global_search(
+        #     u, c, epsilon, q_u, p_u, radius, "deterministic"
+        # )
+        # best_val_ = np.abs(p_u(x_k.reshape(1, -1)))[0]
         x_k, found_points, global_valid = self.global_search(
             u, c, epsilon, q_u, p_u, radius, mode
         )
         best_val = np.abs(p_u(x_k.reshape(1, -1)))[0]
+        # logging.info(f"{best_val-best_val_:.3E}")
         phi = self.M * max(best_val - self.alpha, 0) + q_u
         u_norm = np.linalg.norm(u.coefficients, ord=1)
         if u_norm:
@@ -1128,6 +1186,7 @@ class NLGCG:
         while phi_numerical > tol:
             global_valid = "N/A"
 
+            t = time.time()
             if len(u_plus.coefficients):
                 u_drop, dropped = self.drop_step(u_plus, c_plus)
                 dropped_tot += dropped
@@ -1141,7 +1200,9 @@ class NLGCG:
                 optimization="full",
             )
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
+            ssn_1_time = time.time() - t
 
+            t = time.time()
             parameters, u_ks, radii = self.local_merging_update_radii(u_coef, c_coef)
             c_ks = c_coef
             # local_M = float(self.j(u_ks, c_ks) / self.alpha)
@@ -1151,7 +1212,9 @@ class NLGCG:
             u_ks_gcg, c_ks_gcg = u_ks.copy(), c_ks
             u_ks_new, c_ks_new = u_ks.copy(), c_ks
             u_lm, c_lm = u_ks.copy(), c_ks
+            radii_time = time.time() - t
 
+            t = time.time()
             full_parameters = np.hstack((parameters.flatten(), c_ks))
             # if k == 25:
             #     logging.info(full_parameters)
@@ -1331,6 +1394,8 @@ class NLGCG:
             #     )
             #     break
 
+            newton_time = time.time() - t
+            t = time.time()
             all_iterates = [
                 (u_ks, c_ks),
                 (u_ks_new, c_ks_new),
@@ -1352,13 +1417,16 @@ class NLGCG:
             )
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
+            ssn_2_time = time.time() - t
 
+            t = time.time()
             u_plus, epsilon, global_valid, phi_numerical = self.lgcg_step(
                 p_u, u, c, epsilon, q_u, radii, mode
             )
             c_plus = c
             lgcg_lazy += int(global_valid)
             lgcg_total += 1
+            lgcg_time = time.time() - t
 
             times.append(time.time() - initial_time)
             supports.append(len(u.support))
@@ -1367,6 +1435,9 @@ class NLGCG:
             epsilons.append(epsilon)
             logging.info(
                 f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {phi_numerical:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.14E}"
+            )
+            logging.info(
+                f"ssn_1: {ssn_1_time:.3E}, radii: {radii_time:.3E}, newton: {newton_time:.3E}, ssn_2: {ssn_2_time:.3E}, lgcg: {lgcg_time:.3E}"
             )
             logging.info(
                 "============================================================================================="
