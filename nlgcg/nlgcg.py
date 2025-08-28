@@ -210,14 +210,19 @@ class NLGCG:
         # else:
 
         if mode == "deterministic":
+            t = time.time()
             grid = self.get_grid(u)
+            first_sample_time = time.time() - t
+            second_sample_time = 0
         elif mode == "stochastic":
-            first_sample = self.sample_domain(1000, u)
+            t_0 = time.time()
+            first_sample = self.sample_domain(int(1e4), u)
             first_sample_vals = p_norm(first_sample)
             first_order_indices = np.argsort(first_sample_vals)[::-1][:100]
             best_val = first_sample_vals[first_order_indices[0]]
             best_point = first_sample[first_order_indices[0]]
             phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
+            first_sample_time = time.time() - t_0
             if phi_val >= epsilon:
                 success = True
                 return self.post_process_global_search(
@@ -229,6 +234,7 @@ class NLGCG:
                     radius=radius,
                 )
 
+            t_0 = time.time()
             refinement_samples = 10
             sample_start_points = np.repeat(
                 first_sample[first_order_indices],
@@ -238,7 +244,7 @@ class NLGCG:
             local_updates = np.tile(
                 np.random.multivariate_normal(
                     mean=np.zeros(self.Omega.shape[0]),
-                    cov=0.01 * np.eye(self.Omega.shape[0]),
+                    cov=radius * np.eye(self.Omega.shape[0]),
                     size=refinement_samples,
                 ),
                 (len(first_order_indices), 1),
@@ -250,8 +256,13 @@ class NLGCG:
             second_sample_vals = p_norm(second_sample)
             second_order_indices = np.argsort(second_sample_vals)[::-1][:100]
             grid = second_sample[second_order_indices]
+            # for point in u.support:
+            #     updated_points = point + local_updates
+            #     second_sample = second_sample_raw[second_sample_raw[:, 0] > 0]
+            #     grid = np.vstack([grid, updated_points])
             if len(u.coefficients):
                 grid = np.vstack([grid, u.support])
+            second_sample_time = time.time() - t_0
 
         grid_vals = p_norm(grid)
         max_ind = np.argmax(grid_vals)
@@ -260,6 +271,9 @@ class NLGCG:
         phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
         if phi_val >= epsilon:
             success = True
+            # logging.info(
+            #     f"first_sample: {first_sample_time:.3E}, second_sample: {second_sample_time:.3E}"
+            # )
             return self.post_process_global_search(
                 success, grid, grid_vals, best_point, best_val, radius
             )
@@ -268,6 +282,9 @@ class NLGCG:
         hess_p = self.hess_p(u, c)
         optimize_grid = np.array([True] * grid.shape[0])
         point_steps = 0
+        inversion_time = 0
+        diff_time = 0
+        rest_time = 0
         while point_steps < self.stop_search:
             batching_factor = (
                 len(self.target) * self.Omega.shape[0] * (self.Omega.shape[0] + 1)
@@ -276,6 +293,7 @@ class NLGCG:
             )
             batch_size = int(self.batching_constant // batching_factor)
             for batch in gen_batches(len(grid), batch_size):
+                t = time.time()
                 optimize_batch = optimize_grid[batch]
                 batch_points = grid[batch][optimize_batch]
                 batch_vals = grid_vals[batch][optimize_batch]
@@ -283,6 +301,8 @@ class NLGCG:
                 new_points_minus = np.zeros(batch_points.shape)
                 gradients = grad_p(batch_points)
                 hessians = hess_p(batch_points)
+                diff_time += time.time() - t
+                t = time.time()
                 for i, (point, gradient, hessian) in enumerate(
                     zip(batch_points, gradients, hessians)
                 ):
@@ -292,6 +312,8 @@ class NLGCG:
                         d = 0.1 * gradient
                     new_points_plus[i] = point + d
                     new_points_minus[i] = point - d
+                inversion_time += time.time() - t
+                t = time.time()
                 # projected_new_points_plus = new_points_plus.copy()
                 projected_new_points_plus = self.project_into_domain(
                     new_points_plus
@@ -302,42 +324,51 @@ class NLGCG:
                 ).copy()
 
                 p_vals_plus = p_norm(projected_new_points_plus)
-                p_vals_plus_invalid = np.isnan(p_vals_plus)
-                p_vals_plus[p_vals_plus_invalid] = batch_vals[p_vals_plus_invalid]
-                projected_new_points_plus[p_vals_plus_invalid] = batch_points[
-                    p_vals_plus_invalid
-                ]
+                # p_vals_plus_invalid = np.isnan(p_vals_plus)
+                # p_vals_plus[p_vals_plus_invalid] = batch_vals[p_vals_plus_invalid]
+                # projected_new_points_plus[p_vals_plus_invalid] = batch_points[
+                #     p_vals_plus_invalid
+                # ] # NAN already handled in definition of p_norm
 
                 p_vals_minus = p_norm(projected_new_points_minus)
-                p_vals_minus_invalid = np.isnan(p_vals_minus)
-                p_vals_minus[p_vals_minus_invalid] = batch_vals[p_vals_minus_invalid]
-                projected_new_points_minus[p_vals_minus_invalid] = batch_points[
-                    p_vals_minus_invalid
-                ]
+                # p_vals_minus_invalid = np.isnan(p_vals_minus)
+                # p_vals_minus[p_vals_minus_invalid] = batch_vals[p_vals_minus_invalid]
+                # projected_new_points_minus[p_vals_minus_invalid] = batch_points[
+                #     p_vals_minus_invalid
+                # ]
 
-                plus_bigges_index = p_vals_plus > p_vals_minus
-                p_vals = np.maximum(p_vals_plus, p_vals_minus)
-                projected_new_points = np.zeros(batch_points.shape)
+                plus_bigges_index = (p_vals_plus > p_vals_minus) & (
+                    p_vals_plus > batch_vals
+                )
+                minus_bigges_index = (p_vals_minus > p_vals_plus) & (
+                    p_vals_minus > batch_vals
+                )
+                p_vals = np.maximum(np.maximum(p_vals_plus, p_vals_minus), batch_vals)
+                projected_new_points = batch_points.copy()
                 projected_new_points[plus_bigges_index] = projected_new_points_plus[
                     plus_bigges_index
                 ]
-                projected_new_points[~plus_bigges_index] = projected_new_points_minus[
-                    ~plus_bigges_index
+                projected_new_points[minus_bigges_index] = projected_new_points_minus[
+                    minus_bigges_index
                 ]
                 grid[batch][optimize_batch] = projected_new_points
                 grid_vals[batch][optimize_batch] = p_vals
-                optimize_grid[batch] = optimize_batch & ~(
-                    p_vals_plus_invalid & p_vals_minus_invalid
-                )
+                # optimize_grid[batch][optimize_batch] = (
+                #     plus_bigges_index | minus_bigges_index
+                # )
 
                 max_ind = np.argmax(p_vals)
                 max_val = p_vals[max_ind]
+                rest_time += time.time() - t
                 if max_val > best_val:
                     best_val = max_val
                     best_point = projected_new_points[max_ind].copy()
                     phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
                     if phi_val >= epsilon:
                         success = True
+                        # logging.info(
+                        #     f"first_sample: {first_sample_time:.3E}, second_sample: {second_sample_time:.3E}, diff:{diff_time/(point_steps+1):.3E}, inversion: {inversion_time/(point_steps+1):.3E}, rest: {rest_time/(point_steps+1):.3E}, {point_steps+1}"
+                        # )
                         return self.post_process_global_search(
                             success, grid, grid_vals, best_point, best_val, radius
                         )
@@ -351,6 +382,9 @@ class NLGCG:
 
             point_steps += 1
 
+        # logging.info(
+        #     f"first_sample: {first_sample_time:.3E}, second_sample: {second_sample_time:.3E}, diff: {diff_time/(point_steps+1):.3E}, inversion: {inversion_time/(point_steps+1):.3E}, rest: {rest_time/(point_steps+1):.3E}, {point_steps+1}"
+        # )
         return self.post_process_global_search(
             success, grid, grid_vals, best_point, best_val, radius
         )
@@ -364,6 +398,7 @@ class NLGCG:
         best_val: float,
         radius: float,
     ) -> tuple:
+        t = time.time()
         valid_indices = np.where(
             np.logical_and(
                 grid_vals >= self.alpha,
@@ -384,6 +419,7 @@ class NLGCG:
             local_distances = np.linalg.norm(found_points - point, axis=1)
             if np.all(local_distances > 2 * radius):
                 found_points = np.vstack((found_points, point))
+        # logging.info(f"post_process: {time.time() - t}")
         return (
             best_point,
             found_points,
