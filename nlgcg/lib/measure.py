@@ -16,11 +16,21 @@ class Measure:
                 matrix = matrix.reshape(1, -1)
             coefficients = matrix[:, 0]
             support = matrix[:, 1:]
-        support, index = np.unique(np.array(support), axis=0, return_index=True)
-        coefficients = np.array(coefficients)[index].astype(float)
-        non_zero_index = np.where(coefficients != 0)[0]
+        support, index, inverse_index, frequencies = np.unique(
+            np.array(support),
+            axis=0,
+            return_index=True,
+            return_inverse=True,
+            return_counts=True,
+        )
+        coefficients_processed = np.array(coefficients)[index].astype(float)
+        repeat_indices = np.where(frequencies > 1)[0]
+        for ind in repeat_indices:
+            repeat_positions = np.where(inverse_index == ind)[0]
+            coefficients_processed[ind] = np.sum(coefficients[repeat_positions])
+        non_zero_index = np.where(coefficients_processed != 0)[0]
         self.support = support[non_zero_index]
-        self.coefficients = coefficients[non_zero_index]
+        self.coefficients = coefficients_processed[non_zero_index]
         assert len(self.support) == len(
             self.coefficients
         ), "The support and coefficients must have the same length"

@@ -16,6 +16,8 @@ class ParticleDescent:
         self,
         m: int,
         j_N: Callable,  # parameterized objective
+        grad_j_N: Callable,
+        hess_j_N: Callable,
         j: Callable,
         p: Callable,  # Dual variable
         grad_p: Callable,
@@ -36,6 +38,8 @@ class ParticleDescent:
         self.m = m
         self.j = j
         self.j_N = j_N
+        self.grad_j_N = grad_j_N
+        self.hess_j_N = hess_j_N
         self.p = p
         self.grad_p = grad_p
         self.Omega = Omega
@@ -52,12 +56,12 @@ class ParticleDescent:
         self.f = f
         self.grad_f = grad_f
         self.hess_f = hess_f
-        self.kernel_sign = np.hstack(
-            (
-                np.ones(self.m ** self.Omega.shape[0]),
-                -np.ones(self.m ** self.Omega.shape[0]),
-            )
-        )
+        # self.kernel_sign = np.hstack(
+        #     (
+        #         np.ones(self.m ** self.Omega.shape[0]),
+        #         -np.ones(self.m ** self.Omega.shape[0]),
+        #     )
+        # )
 
     def parameterize(self, r: np.ndarray, theta: np.ndarray) -> np.ndarray:
         matrix = np.zeros((len(r), 1 + self.Omega.shape[0]))
@@ -81,7 +85,12 @@ class ParticleDescent:
             .T
         )
         theta = np.vstack((theta, theta))  # Positive and negative support
+        theta = np.array(
+            [[0.06, 0.28], [0.05, 0.51], [0.04, 0.71]]
+        ) + 0.01 * np.random.normal(size=(3, 2))
+        r = np.array([1, -0.7, 0.8]) + 0.01 * np.random.normal(size=(3))
         c = 0
+        self.kernel_sign = np.sign(r)
         return r, theta, c
 
     def finite_dimensional_step(
@@ -102,7 +111,7 @@ class ParticleDescent:
             K=K_support,
             alpha=self.alpha,
             target=self.target,
-            M=self.M,
+            M=float(self.j(u, c) / self.alpha),
             g=self.g,
             f=self.f,
             grad_f=self.grad_f,
@@ -125,8 +134,9 @@ class ParticleDescent:
         return c_plus
 
     def retraction(
-        self, r: float, del_r: float, theta: np.ndarray, del_theta: np.ndarray
+        self, r: np.ndarray, del_r: np.ndarray, theta: np.ndarray, del_theta: np.ndarray
     ) -> tuple:
+        # logging.info(f"{r.shape}, {del_r.shape}, {theta.shape}, {del_theta.shape}")
         r_retraction = r + del_r
         theta_retraction = theta + del_theta
         return r_retraction, theta_retraction
@@ -137,30 +147,41 @@ class ParticleDescent:
     ):
         r, theta, c = self.initial_distribution()
         u = Measure(matrix=self.parameterize(r, theta))
-        self.M = float(self.j(u, c) / self.alpha)
         c = self.finite_dimensional_step(u, c)
-        self.M = float(self.j(u, c) / self.alpha)
         logging.info(f"0: objective {self.j(u, c):.14E}")
         logging.info(r)
         logging.info(theta)
         for iter in range(max_iters):
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
-            r_update = (
-                -2
-                * self.a_parameter
-                * r
-                * (-self.kernel_sign * p_u(theta) + self.alpha)
-            )
-            theta_update = (
-                -self.b_parameter * np.multiply(self.kernel_sign, grad_p_u(theta).T).T
-            )
+            r_update = -2 * self.a_parameter * np.abs(r) * (-p_u(theta) + self.alpha)
+            # logging.info(p_u(theta))
+            # grad = np.array(
+            #     self.grad_j_N(np.hstack((self.parameterize(r, theta).flatten(), c)))
+            # )
+            # hess = np.array(
+            #     self.hess_j_N(
+            #         np.hstack((np.hstack((r.reshape(-1, 1), theta)).flatten(), c))
+            #     )
+            # )
+            # dir = -np.linalg.solve(hess, grad)
+            # logging.info(grad[:-1].reshape(len(r), -1))
+            # r_update = -self.a_parameter * grad[:-1].reshape(len(r), -1)[:, 0]
+            # theta_update = -self.b_parameter * grad[:-1].reshape(len(r), -1)[:, 1:]
+            theta_update = self.b_parameter * np.array(grad_p_u(theta))
+            # logging.info("----------------------")
+            # logging.info(-grad)
+            # logging.info(r_update / (2 * self.a_parameter * np.abs(r)))
+            # logging.info(
+            #     np.multiply(theta_update.T, r**2).T / (self.b_parameter * len(r))
+            # )
+            # logging.info(f"---------------------")
             r, theta = self.retraction(r, r_update, theta, theta_update)
             theta[:, 0] = np.maximum(theta[:, 0], 1e-5)
             u = Measure(matrix=self.parameterize(r, theta))
             c = self.finite_dimensional_step(u, c)
-            self.M = float(self.j(u, c) / self.alpha)
-            logging.info(f"{iter + 1}: objective {self.j(u, c):.14E}")
-            # logging.info(r)
-            # logging.info(theta)
+            if iter % 100 == 0:
+                logging.info(f"{iter + 1}: objective {self.j(u, c):.14E}")
+                logging.info(r)
+                logging.info(theta)
         return u, c
