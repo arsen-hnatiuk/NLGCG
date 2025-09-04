@@ -409,7 +409,7 @@ class NLGCG:
         valid_grid = grid[valid_indices]
         valid_grid_vals = grid_vals[valid_indices]
         order_indices = np.argsort(valid_grid_vals)[::-1]
-        order_grid = valid_grid[order_indices][:10]
+        order_grid = valid_grid[order_indices][:100]
 
         if not len(order_grid):
             found_points = np.array([best_point])
@@ -638,72 +638,6 @@ class NLGCG:
             params = params_new.copy()
         return params
 
-    # def globalized_ssn(
-    #     self, k: int, params: np.ndarray, support: float, lbda: float
-    # ) -> np.ndarray:
-    #     for s in range(self.max_inner_loop):
-    #         local_M = float(self.j_N(params) / self.alpha)
-    #         grad = self.grad_j_N(params)
-
-    #         prox_params, D_diagonal = self.prox_and_grad(params, lbda)
-    #         normal_map_vector = self.normal_map(params, prox_params, lbda)
-    #         opposite_D_diagonal = np.ones_like(D_diagonal) - D_diagonal
-    #         g_vector = np.multiply(D_diagonal, normal_map_vector)
-    #         hess_D_g = jax.jvp(self.grad_f_N, (prox_params,), (g_vector,))[1]
-    #         S_g = np.multiply(D_diagonal, hess_D_g.T).T  # D^T*B*D*g
-    #         m = lambda x: 0
-    #         q_bar, steihaug_iters = self.steihaug_cg(
-    #             prox_params=prox_params,
-    #             D_diagonal=D_diagonal,
-    #             S_g=S_g,
-    #             g_vector=g_vector,
-    #             eps=self.machine_precision,
-    #             delta=1e200,
-    #             m=m,
-    #         )
-    #         D_q_bar = np.multiply(D_diagonal, q_bar)
-    #         hess_D_q_bar = jax.jvp(self.grad_f_N, (prox_params,), (D_q_bar,))[
-    #             1
-    #         ]  # B*D*q_bar
-    #         update_direction = (
-    #             q_bar
-    #             - lbda * (normal_map_vector + hess_D_q_bar)
-    #             - np.multiply(opposite_D_diagonal, q_bar)
-    #         )
-
-    #         update_norm = np.linalg.norm(update_direction)
-    #         grad_direction = -np.matmul(grad, update_direction)
-    #         condition = grad_direction >= self.descent_constant * np.power(
-    #             update_norm, self.newton_p
-    #         )
-    #         if not np.any(condition) or any(np.isnan(update_direction)):
-    #             update_direction = -grad.copy()
-    #             choice = "Grad"
-    #         else:
-    #             choice = "Newt"
-
-    #         if any(np.isnan(update_direction)):
-    #             return params
-    #         params_new, sigma = self.armijo(params, update_direction, grad, choice)
-
-    #         # Check validity of the newton step
-    #         domain_tests = self.domain_and_descent_tests(
-    #             params,
-    #             params_new,
-    #             local_M,
-    #             choice,
-    #         )
-    #         logging.info(
-    #             f"{k}, {s}: Globalization: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, c_raw: {self.C_raw:.2E}, sigma: {sigma:.2E}, objective: {self.j_N(params_new):.14E}"
-    #         )
-    #         if not all([domain_tests[i] for i in [0, 3]]):
-    #             logging.info(f"Domain tests: {domain_tests}")
-    #             if not domain_tests[-1]:
-    #                 logging.info(f"grad_norm: {np.linalg.norm(grad):.3E}")
-    #             return params
-    #         params = params_new.copy()
-    #     return params
-
     def q_function(self, s: np.ndarray, y: np.ndarray) -> float:
         norm_s = s @ s
         norm_y = y @ y
@@ -796,15 +730,12 @@ class NLGCG:
 
     def H(
         self,
-        normal_map_vector: np.ndarray,
+        normal_map_norm: float,
         prox_params: np.ndarray,
         tau: float,
         lbda: float = 1,
     ) -> float:
-        return (
-            self.j_N(prox_params)
-            + tau * lbda * 0.5 * np.linalg.norm(normal_map_vector) ** 2
-        )
+        return self.j_N(prox_params) + tau * lbda * 0.5 * normal_map_norm**2
 
     def normal_map(
         self, params: np.ndarray, prox_params: np.ndarray, lbda: float = 1
@@ -821,7 +752,7 @@ class NLGCG:
                 prox_val[i] = val
                 prox_grad[i] = 1
             else:
-                if np.abs(val) > self.alpha:
+                if np.abs(val) > lbda * self.alpha:
                     prox_val[i] = val - lbda * self.alpha * np.sign(val)
                     prox_grad[i] = 1
         return prox_val, prox_grad
@@ -838,12 +769,13 @@ class NLGCG:
         tau = 0  # 0.1 / (lbda**2 * L**2 + 2)
         # nu = 0.5 * min(tau, 0.05 * (1 - 0.5 * tau * (0.5 * L**2 * lbda**2 + 1)))
         # n_s = 0
-
         prox_params, D_diagonal = self.prox_and_grad(params, lbda)
+        if not self.max_inner_loop:
+            return prox_params
         normal_map_vector = self.normal_map(params, prox_params, lbda)
         normal_map_norm = np.linalg.norm(normal_map_vector)
-        delta = min(0.01, 0.5 * np.linalg.norm(normal_map_vector))
-        H_value = self.H(normal_map_vector, prox_params, tau, lbda)
+        delta = min(0.01, 0.5 * normal_map_norm)
+        H_value = self.H(normal_map_norm, prox_params, tau, lbda)
 
         for s_iter in range(self.max_inner_loop):
             if normal_map_norm < self.machine_precision:
@@ -869,13 +801,9 @@ class NLGCG:
                 min((np.power(normal_map_norm, 2.5), 0.01)), self.machine_precision
             )
 
-            q_bar, steihaug_iters = self.steihaug_cg(
+            q_bar, steihaug_iters, r_norm = self.steihaug_cg(
                 prox_params, D_diagonal, S_g, g_vector, eps, delta, m
             )
-            # D_q = np.multiply(D_diagonal, q_bar)
-            # hess_q = jax.jvp(self.grad_f_N, (prox_params,), (D_q,))[1]
-            # logging.info(np.linalg.norm(np.multiply(D_diagonal, hess_q.T).T + g_vector))
-
             D_q_bar = np.multiply(D_diagonal, q_bar)
             hess_D_q_bar = jax.jvp(self.grad_f_N, (prox_params,), (D_q_bar,))[
                 1
@@ -892,7 +820,8 @@ class NLGCG:
             normal_map_vector_plus = self.normal_map(
                 params_plus, prox_params_plus, lbda
             )
-            H_value_plus = self.H(normal_map_vector_plus, prox_params_plus, tau, lbda)
+            normal_map_norm_plus = np.linalg.norm(normal_map_vector_plus)
+            H_value_plus = self.H(normal_map_norm_plus, prox_params_plus, tau, lbda)
 
             a_red = H_value - H_value_plus
             # if n_s:
@@ -921,7 +850,7 @@ class NLGCG:
                 # n_s += 1
                 params = params_plus
                 normal_map_vector = normal_map_vector_plus
-                normal_map_norm = np.linalg.norm(normal_map_vector)
+                normal_map_norm = normal_map_norm_plus
                 prox_params = prox_params_plus
                 D_diagonal = D_diagonal_plus
                 H_value = H_value_plus
@@ -958,9 +887,9 @@ class NLGCG:
         q = np.zeros_like(g_vector)
         p = -g_vector
         S_p = -S_g
-        if np.linalg.norm(r) < eps:
+        if np.sqrt(r_r) < eps:
             # logging.info(f"0 r: {np.sqrt(r_r)}, eps: {eps}")
-            return q, 0
+            return q, 0, np.sqrt(r_r)
         # i = 0
         # while True:
         #     i += 1
@@ -968,7 +897,7 @@ class NLGCG:
             p_S_p = np.matmul(S_p, p)
             if p_S_p <= 0:
                 if delta > 1e50:
-                    return q, i + 1
+                    return q, i + 1, np.sqrt(r_r)
                 a_minus, a_plus = self.constraint_finder(q, p, delta)
                 q_minus = q + a_minus * p
                 q_plus = q + a_plus * p
@@ -976,23 +905,23 @@ class NLGCG:
                 m_q_plus = m(q_plus)
                 # logging.info(f"1 r: {np.sqrt(r_r)}, eps: {eps}")
                 if m_q_minus < m_q_plus:
-                    return q_minus, i + 1
+                    return q_minus, i + 1, np.sqrt(r_r)
                 else:
-                    return q_plus, i + 1
+                    return q_plus, i + 1, np.sqrt(r_r)
             a = r_r / p_S_p
             q_plus = q + a * p
             if np.linalg.norm(q_plus) > delta:
                 a_minus, a_plus = self.constraint_finder(q, p, delta)
                 # logging.info(f"2 r: {np.sqrt(r_r)}, eps: {eps}")
                 if a_plus >= 0:
-                    return q + a_plus * p, i + 1
+                    return q + a_plus * p, i + 1, np.sqrt(r_r)
                 elif a_minus >= 0:
-                    return q + a_minus * p, i + 1
+                    return q + a_minus * p, i + 1, np.sqrt(r_r)
             r_plus = r + a * S_p
             r_plus_r_plus = r_plus @ r_plus
             if np.sqrt(r_plus_r_plus) < eps:
                 # logging.info(f"3 r: {np.sqrt(r_plus_r_plus)}, eps: {eps}")
-                return q_plus, i + 1
+                return q_plus, i + 1, np.sqrt(r_plus_r_plus)
             beta = r_plus_r_plus / r_r
             p_plus = -r_plus + beta * p
 
@@ -1004,7 +933,7 @@ class NLGCG:
                 self.grad_f_N, (prox_params,), (np.multiply(D_diagonal, p),)
             )[1]
             S_p = np.multiply(D_diagonal, hess_D_p.T).T  # D^T*B*D*p
-        return q, i + 1
+        return q, i + 1, np.sqrt(r_r)
 
     def lgcg_step(
         self,
@@ -1252,8 +1181,10 @@ class NLGCG:
 
             t = time.time()
             full_parameters = np.hstack((parameters.flatten(), c_ks))
-            # if k == 25:
-            #     logging.info(full_parameters)
+            e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
+            logging.info(f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}")
+            if np.min(e_vals) > 0:
+                logging.info(full_parameters)
             if len(u_ks.coefficients):
                 if inner_mode == "trust_region_ssn":
                     full_parameters_new = self.trust_region_ssn(
@@ -1266,13 +1197,6 @@ class NLGCG:
                 elif inner_mode == "newton":
                     full_parameters_new = self.globalized_newton_step(
                         k=k, params=full_parameters, support=len(u_ks.support)
-                    )
-                elif inner_mode == "globalized_ssn":
-                    full_parameters_new = self.globalized_ssn(
-                        k=k,
-                        params=full_parameters,
-                        support=len(u_ks.support),
-                        lbda=lbda,
                     )
                 parameters = full_parameters_new[:-1].reshape(parameters.shape)
                 c_ks = full_parameters_new[-1]
