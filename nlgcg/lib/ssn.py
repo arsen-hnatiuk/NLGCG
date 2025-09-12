@@ -23,6 +23,7 @@ class SSN:
         invariable_kernel: np.ndarray,
         mode: str = "unconstrained",  # "unconstrained" for unconstrained, else for positive solutions
         maximum_iterations: int = 1000,
+        regularization: str = "mixed",
     ) -> None:
         self.K = K
         if all(self.K.shape):
@@ -45,6 +46,7 @@ class SSN:
             self.M = M
             self.target_norm = np.mean(np.abs(self.target))
             self.maximum_iterations = maximum_iterations
+            self.regularization = regularization
             if mode == "unconstrained":
                 self.Psi = self.Psi_unconstrained
                 self.prox = self.prox_unconstrained
@@ -64,9 +66,9 @@ class SSN:
         else:
             constant_part = 0
         regularization_summand = self.alpha * np.ones(p.shape)
-        regularization_summand[-1] = 0  # Last element is not regularized
-        norm_multiplier = np.ones(len(p))  # * self.M
-        # norm_multiplier[-1] = self.target_norm
+        if self.regularization == "mixed":
+            regularization_summand[-1] = 0  # Last element is not regularized
+        norm_multiplier = np.ones(len(p))
         to_maximize = np.multiply(norm_multiplier, np.abs(p) - regularization_summand)
         variable_part = max(0, np.max(to_maximize))
         return constant_part + variable_part
@@ -81,9 +83,9 @@ class SSN:
         else:
             constant_part = 0
         regularization_summand = self.alpha * np.ones(p.shape)
-        regularization_summand[-1] = 0  # Last element is not regularized
-        norm_multiplier = np.ones(len(p))  # * self.M
-        # norm_multiplier[-1] = self.target_norm
+        if self.regularization == "mixed":
+            regularization_summand[-1] = 0  # Last element is not regularized
+        norm_multiplier = np.ones(len(p))
         to_maximize = np.multiply(norm_multiplier, p - regularization_summand)
         variable_part = max(0, np.max(to_maximize))
         return constant_part + variable_part
@@ -91,29 +93,33 @@ class SSN:
     def prox_unconstrained(self, q: np.ndarray) -> np.ndarray:
         q = q.copy()
         to_return = np.zeros(q.shape)
-        for i, val in enumerate(q[:-1]):
+        for i, val in enumerate(q):
             if np.abs(val) > self.alpha:
                 to_return[i] = val - self.alpha * np.sign(val)
-        to_return[-1] = q[-1]  # Last element is not regularized
+        if self.regularization == "mixed":
+            to_return[-1] = q[-1]  # Last element is not regularized
         return to_return
 
     def prox_positive(self, q: np.ndarray) -> np.ndarray:
         q = q.copy()
         to_return = np.zeros(q.shape)
-        for i, val in enumerate(q[:-1]):
+        for i, val in enumerate(q):
             if val > self.alpha:
                 to_return[i] = val - self.alpha
-        to_return[-1] = q[-1]  # Last element is not regularized
+        if self.regularization == "mixed":
+            to_return[-1] = q[-1]  # Last element is not regularized
         return to_return
 
     def grad_prox_unconstrained(self, q: np.ndarray) -> np.ndarray:
         q = q.copy()
-        q[-1] = self.alpha + 1  # Last element is not regularized
+        if self.regularization == "mixed":
+            q[-1] = self.alpha + 1  # Last element is not regularized
         return np.diag(np.where(np.abs(q) > self.alpha, 1, 0))
 
     def grad_prox_positive(self, q: np.ndarray) -> np.ndarray:
         q = q.copy()
-        q[-1] = self.alpha + 1  # Last element is not regularized
+        if self.regularization == "mixed":
+            q[-1] = self.alpha + 1  # Last element is not regularized
         return np.diag(np.where(q > self.alpha, 1, 0))
 
     def solve(self, tol: float, u_0: np.ndarray) -> np.ndarray:
