@@ -3,6 +3,7 @@
 import numpy as np
 from typing import Callable
 import logging
+import time
 from itertools import product
 from lib.measure import Measure
 from lib.ssn import SSN
@@ -20,12 +21,9 @@ class AdaptiveRefinement:
         j: Callable,
         p: Callable,  # Dual variable
         grad_p: Callable,
+        hess_p: Callable,
         Omega: np.ndarray,
-        a_parameter: float,
-        b_parameter: float,
         kernel: Callable,
-        constant_dim: int,
-        kernel_dim: int,
         alpha: float,
         target: np.ndarray,
         g: Callable,
@@ -39,13 +37,10 @@ class AdaptiveRefinement:
         self.j = j
         self.p = p
         self.grad_p = grad_p
+        self.hess_p = hess_p
         self.Omega = Omega
-        self.a_parameter = a_parameter
-        self.b_parameter = b_parameter
         self.machine_precision = 5e-14
         self.kernel = kernel
-        self.constant_dim = constant_dim
-        self.kernel_dim = kernel_dim
         self.ssn_steps = ssn_steps
         self.alpha = alpha
         self.target = target
@@ -78,7 +73,7 @@ class AdaptiveRefinement:
             grad_f=self.grad_f,
             hess_f=self.hess_f,
             invariable_kernel=np.zeros(len(K_support)),
-            mode="positive",
+            mode="unconstrained",
             maximum_iterations=self.ssn_steps,
             regularization="full",
         )
@@ -118,7 +113,7 @@ class AdaptiveRefinement:
         return cells, vertices
 
     def hess_bound(
-        self, q: np.ndarray, cell: np.ndarray, vertices: np.ndarray, cell_edge: float
+        self, q: np.ndarray, cell: np.ndarray, vertices: np.ndarray
     ) -> float:
         kappa = 0
         min_variance = np.min(vertices[:, 0])
@@ -187,53 +182,90 @@ class AdaptiveRefinement:
             cells, vertices = self.initiate()
         coefs = np.zeros(len(vertices))
         for iter in range(max_iters):
+            if iter:
+                # Determine which cells to subdivide
+                subdivide_indices = []
+                subdivide_edge = 0
+                grad_compute = 0
+                kappa_compute = 0
+                upper_b_compute = 0
+                lower_b_compute = 0
+                for i, cell in enumerate(cells):
+                    t = time.time()
+                    cell_edge = cell[0, 1] - cell[0, 0]
+                    if cell_edge < subdivide_edge:
+                        continue
+                    cell_vertices = cell[
+                        np.arange(len(cell)), self.split_configurations
+                    ]
+                    cell_p_vals = p_u(cell_vertices)
+                    cell_grad_p_vals = grad_p_u(cell_vertices)
+                    grad_compute += time.time() - t
+                    t = time.time()
+                    kappa = np.max(
+                        np.linalg.norm(hess_p_u(cell_vertices), axis=(1, 2))
+                    )  # self.hess_bound(q, cell, cell_vertices) # Rough upper bound on the Hessian norm in the cell!!!
+                    kappa_compute += time.time() - t
+                    t = time.time()
+                    upper_bound = self.alpha
+                    for vertex, p_val, grad_p_val in zip(
+                        cell_vertices, cell_p_vals, cell_grad_p_vals
+                    ):
+                        inner_upper_bound = 0
+                        for inner_vetex in cell_vertices:
+                            local_bound = (
+                                np.abs(p_val + grad_p_val @ (inner_vetex - vertex))
+                                + 0.5
+                                * kappa
+                                * np.linalg.norm(inner_vetex - vertex) ** 2
+                            )
+                            if local_bound > inner_upper_bound:
+                                inner_upper_bound = local_bound
+                        if inner_upper_bound < upper_bound:
+                            upper_bound = inner_upper_bound
+                        if upper_bound < self.alpha:
+                            break
+                    upper_b_compute += time.time() - t
+                    t = time.time()
+                    lower_bound = (
+                        np.max(np.linalg.norm(cell_grad_p_vals, axis=1))
+                        - kappa * cell_edge * self.vol_factor
+                    )
+                    # lower_bound = 0
+                    if upper_bound >= self.alpha and lower_bound <= 0:
+                        if cell_edge > subdivide_edge:
+                            subdivide_indices = [i]
+                            subdivide_edge = cell_edge
+                        elif cell_edge == subdivide_edge:
+                            subdivide_indices.append(i)
+                            subdivide_edge = cell_edge
+                    lower_b_compute += time.time() - t
+
+                # Subdivide cells
+                t = time.time()
+                for index in subdivide_indices[::-1]:
+                    new_cells, new_vertex = self.split_cell(cells[index])
+                    cells = np.delete(cells, index, axis=0)
+                    cells = np.vstack((cells, new_cells))
+                    vertices = np.vstack((vertices, new_vertex))
+                    coefs = np.append(coefs, 0)
+                subdivide = time.time() - t
+                logging.info(
+                    f"grad: {grad_compute:.3f}, kappa: {kappa_compute:.3f}, upper: {upper_b_compute:.3f}, lower: {lower_b_compute:.3f}, subdivide: {subdivide:.3f}"
+                )
+
             # Determine q
+            t = time.time()
             coefs = self.finite_dimensional_step(vertices, coefs)
             u = Measure(support=vertices, coefficients=coefs)
+            logging.info(
+                f"{iter + 1}: vertices: {len(vertices)}, support: {len(u.coefficients)}, objective: {self.j(u, 0):.14E}"
+            )
             q = -self.grad_f(
                 np.tensordot(self.kernel(vertices), coefs, axes=([0], [0]))
             )
             p_u = self.p(u, 0)
             grad_p_u = self.grad_p(u, 0)
-
-            # Determine which cells to subdivide
-            subdivide_indices = []
-            subdivide_edge = 0
-            for i, cell in enumerate(cells):
-                cell_edge = cell[0, 1] - cell[0, 0]
-                cell_vertices = cell[np.arange(len(cell)), self.split_configurations]
-                kappa = self.hess_bound(q, cell, cell_vertices, cell_edge)
-                logging.info(kappa)
-                cell_p_vals = p_u(cell_vertices)
-                cell_grad_p_vals = grad_p_u(cell_vertices)
-                upper_bound = 0
-                for vertex, p_val, grad_p_val in zip(
-                    cell_vertices, cell_p_vals, cell_grad_p_vals
-                ):
-                    for inner_vetex in cell_vertices:
-                        local_bound = (
-                            np.abs(p_val + grad_p_val @ (inner_vetex - vertex))
-                            + 0.5 * kappa * np.linalg.norm(inner_vetex - vertex) ** 2
-                        )
-                        if local_bound > upper_bound:
-                            upper_bound = local_bound
-                lower_bound = (
-                    np.max(np.linalg.norm(cell_grad_p_vals, axis=1))
-                    - kappa * cell_edge * self.vol_factor
-                )
-                if upper_bound >= 1 and lower_bound <= 0:
-                    if cell_edge > subdivide_edge:
-                        subdivide_indices = [i]
-                    elif cell_edge == subdivide_edge:
-                        subdivide_indices.append(i)
-
-            # Subdivide cells
-            logging.info(subdivide_indices)
-            for index in subdivide_indices[::-1]:
-                new_cells, new_vertex = self.split_cell(cells[index])
-                cells = np.delete(cells, index, axis=0)
-                cells = np.vstack((cells, new_cells))
-                vertices = np.vstack((vertices, new_vertex))
-                coefs = np.append(coefs, 0)
-
+            hess_p_u = self.hess_p(u, 0)
+            logging.info(f"ssn: {time.time() - t:.3f}")
         return cells, vertices, coefs, u
