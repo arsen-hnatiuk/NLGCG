@@ -1,8 +1,9 @@
 # Implementation of global search methods for the solution of the non-convex problem in NLGCG
 
 import numpy as np
+import scipy as sp
 import logging
-import jaxlib
+import time
 import jax
 from typing import Callable, Union
 from sklearn.utils import gen_batches
@@ -47,9 +48,7 @@ class GlobalSearch:
             self.get_grid = self.stochastic_grid
             self.stop_search = 3
 
-    def project_into_domain(
-        self, x: Union[np.ndarray, jaxlib.xla_extension.ArrayImpl]
-    ) -> np.ndarray:
+    def project_into_domain(self, x: np.ndarray) -> np.ndarray:
         # Project an array into domain, parallelized
         x = np.array(x).copy()
         if x.shape[1] > self.Omega.shape[0]:
@@ -70,14 +69,17 @@ class GlobalSearch:
         columns = []
         for i, bounds in enumerate(self.Omega):
             if i == 0:
-                # Sample sigma exponentially
-                if len(u.coefficients):
-                    distribution_parameter = max(u.support[:, 0].max(), bounds[1])
-                else:
-                    distribution_parameter = bounds[1]
+                # # Sample sigma exponentially
+                # if len(u.coefficients):
+                #     distribution_parameter = max(u.support[:, 0].max(), bounds[1])
+                # else:
+                #     distribution_parameter = bounds[1]
+                # columns.append(
+                #     np.random.exponential(scale=distribution_parameter, size=(size, 1))
+                #     + bounds[0]
+                # )
                 columns.append(
-                    np.random.exponential(scale=distribution_parameter, size=(size, 1))
-                    + bounds[0]
+                    np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
                 )
             else:
                 columns.append(
@@ -87,7 +89,13 @@ class GlobalSearch:
         return sample
 
     def deterministic_grid(
-        self, u: Measure, p_norm: Callable, q_u: float, epsilon: float, radius: float
+        self,
+        u: Measure,
+        p_norm: Callable,
+        grad_p_u: Callable,
+        q_u: float,
+        epsilon: float,
+        radius: float,
     ) -> np.ndarray:
         grid = (
             np.array(
@@ -113,8 +121,14 @@ class GlobalSearch:
         success = phi_val >= epsilon
         return success, grid, grid_vals, best_point, best_val
 
-    def stochastic_grid(
-        self, u: Measure, p_norm: Callable, q_u: float, epsilon: float, radius: float
+    def stochastic_grid_old(
+        self,
+        u: Measure,
+        p_norm: Callable,
+        grad_p_u: Callable,
+        q_u: float,
+        epsilon: float,
+        radius: float,
     ) -> tuple:
         grid = self.sample_domain(int(1e4), u)
         grid_vals = p_norm(grid)
@@ -154,6 +168,142 @@ class GlobalSearch:
         best_point = grid[best_ind].copy()
         phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
         success = phi_val >= epsilon
+        return success, grid, grid_vals, best_point, best_val
+
+    def determine_step_size_sampling(self, mesh: float) -> float:
+        # Determine variance needed for sampled points to be within the mesh at given probability
+        probability_interval = [0.79, 0.799]
+        incumbent_variance = (mesh**2) / self.Omega.shape[1]  # initial value
+        variance_upper = incumbent_variance
+        variance_lower = 2 * incumbent_variance
+        incumbent_probability = sp.special.gammainc(
+            self.Omega.shape[1] / 2, 0.5 * mesh**2 / incumbent_variance
+        )
+        while (incumbent_probability < probability_interval[0]) or (
+            incumbent_probability > probability_interval[1]
+        ):
+            if incumbent_probability < probability_interval[0]:
+                variance_upper = incumbent_variance
+            elif incumbent_probability > probability_interval[1]:
+                variance_lower = incumbent_variance
+            if variance_upper <= variance_lower:
+                # Upper bound not yet found
+                incumbent_variance /= 2
+            else:
+                # Binary search
+                incumbent_variance = (variance_lower + variance_upper) / 2
+            incumbent_probability = sp.special.gammainc(
+                self.Omega.shape[1] / 2, 0.5 * mesh**2 / incumbent_variance
+            )
+        return incumbent_variance
+
+    def separate_points(
+        self,
+        points: np.ndarray,
+        vals: np.ndarray,
+        mesh: float,
+        best_val: float,
+        lipschitzs: float,
+    ) -> list:
+        # Remove points based on overlap and current best value
+        relevant_indices = vals + lipschitzs * mesh > best_val
+        filtered_points = points[relevant_indices]
+        filtered_vals = vals[relevant_indices]
+        filtered_lipschitzs = lipschitzs[relevant_indices]
+
+        sorted_indices = np.argsort(filtered_vals)[::-1]
+        sorted_points = filtered_points[sorted_indices]
+        sorted_vals = filtered_vals[sorted_indices]
+        sorted_lipschitzs = filtered_lipschitzs[sorted_indices]
+        separated_points = np.array([sorted_points[0]])
+        separated_vals = np.array([sorted_vals[0]])
+        separated_lipschitzs = np.array([sorted_lipschitzs[0]])
+        for x, val, lipschitz in zip(
+            sorted_points[1:], sorted_vals[1:], sorted_lipschitzs[1:]
+        ):
+            distances = np.linalg.norm(separated_points - x, axis=1)
+            if all(distances > mesh):
+                separated_points = np.vstack((separated_points, [x]))
+                separated_vals = np.append(separated_vals, val)
+                separated_lipschitzs = np.append(separated_lipschitzs, lipschitz)
+            # if len(filtered_vals) >= self.max_chains:
+            #     break
+        return separated_points, separated_vals, separated_lipschitzs
+
+    def stochastic_grid(
+        self,
+        u: Measure,
+        p_norm: Callable,
+        grad_p_u: Callable,
+        q_u: float,
+        epsilon: float,
+        radius: float,
+    ) -> tuple:
+        success = False
+        N = 90  # sample size 99% confidence
+        mesh_reduction_factor = 20
+        mesh_reduction = 1 / (mesh_reduction_factor ** (1 / self.Omega.shape[0]))
+        mesh = max([bound[1] - bound[0] for bound in self.Omega])
+
+        grid = self.sample_domain(1, u)
+        grid_vals = p_norm(grid)
+        lipschitzs = np.linalg.norm(grad_p_u(grid), axis=1)
+        best_index = np.argmax(grid_vals)
+        best_val = grid_vals[best_index].copy()
+        best_point = grid[best_index].copy()
+
+        while mesh > 1e-2:
+            now = time.time()
+
+            grid, grid_vals, grid_lipschitzs = self.separate_points(
+                grid, grid_vals, mesh, best_val, lipschitzs
+            )
+            step_size = self.determine_step_size_sampling(mesh)
+            mesh = mesh_reduction * mesh
+
+            # New points
+            sample_updates = np.random.multivariate_normal(
+                mean=np.zeros(self.Omega.shape[0]),
+                cov=step_size * np.eye(self.Omega.shape[0]),
+                size=N * len(grid_vals),
+            )
+            starting_points = np.repeat(grid, [N] * len(grid_vals), axis=0)
+            points_new_raw = starting_points + sample_updates  # new trial points
+            points_new = self.project_into_domain(points_new_raw)
+
+            # Compute the P values of trial points
+            points_new_vals = p_norm(points_new)
+            points_new_lipschitzs = np.linalg.norm(grad_p_u(points_new), axis=1)
+
+            # Update the best value
+            best_index = np.argmax(points_new_vals)
+            tentative_best_val = points_new_vals[best_index].copy()
+            if tentative_best_val > best_val:
+                best_val = tentative_best_val
+                best_point = points_new[best_index].copy()
+                phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
+                success = phi_val >= epsilon
+                if success:
+                    if len(u.coefficients):
+                        grid = np.vstack([grid, u.support])
+                        grid_vals = np.hstack((grid_vals, p_norm(u.support)))
+                    return success, grid, grid_vals, best_point, best_val
+
+            # # Choose promising new points
+            # promising_indices = x_new_vals > best_val - lipschitz * mesh
+
+            # Add accepted new points to active tuples
+            grid = np.vstack((grid, points_new))
+            grid_vals = np.append(grid_vals, points_new_vals)
+            lipschitzs = np.append(grid_lipschitzs, points_new_lipschitzs)
+
+            logging.info(
+                f"Sample step complete. {len(grid_vals)} points, mesh: {mesh:.3E}, time: {time.time() - now:.3E}"
+            )
+
+        if len(u.coefficients):
+            grid = np.vstack([grid, u.support])
+            grid_vals = np.hstack((grid_vals, p_norm(u.support)))
         return success, grid, grid_vals, best_point, best_val
 
     def post_process_global_search(
@@ -201,8 +351,9 @@ class GlobalSearch:
         radius: float,
     ) -> tuple:
         p_norm = lambda x: np.abs(np.array(np.nan_to_num(p_u(x))))
+        grad_p_u = self.grad_p(u, c)
         success, grid, grid_vals, best_point, best_val = self.get_grid(
-            u, p_norm, q_u, epsilon, radius
+            u, p_norm, grad_p_u, q_u, epsilon, radius
         )
         if success:
             return self.post_process_global_search(
