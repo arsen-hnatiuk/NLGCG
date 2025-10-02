@@ -46,6 +46,7 @@ class NLGCG:
         dual_variable_goodness: float = 0.5,
         ssn_steps: int = 100,
         min_radius: float = 0.01,  # For Trust Region
+        newton_tolerance: float = 2e-2,  # Tolerance for Newton steps in Global Search
     ) -> None:
         self.target = target
         self.kernel = kernel
@@ -83,6 +84,7 @@ class NLGCG:
         self.dual_variable_goodness = dual_variable_goodness
         self.ssn_steps = ssn_steps
         self.min_radius = min_radius
+        self.newton_tolerance = newton_tolerance
 
     def finite_dimensional_step(
         self,
@@ -257,7 +259,7 @@ class NLGCG:
         epsilon: float,
         q_u: float,
         radii: np.ndarray,
-        mode: str = "stochastic",
+        mode: str = "stochastic_adaptive",
     ) -> tuple:
         j_initial = self.j(u, c)
         condition = False
@@ -275,11 +277,11 @@ class NLGCG:
             grad_p=self.grad_p,
             hess_p=self.hess_p,
             mode=mode,
+            newton_tolerance=self.newton_tolerance,
         )
-        x_k, found_points, global_valid = global_search_object.solve(
+        best_val, found_points, global_valid = global_search_object.solve(
             u, c, epsilon, q_u, p_u, radius
         )
-        best_val = np.abs(p_u(x_k.reshape(1, -1)))[0]
         phi = self.M * max(best_val - self.alpha, 0) + q_u
         u_norm = np.linalg.norm(u.coefficients, ord=1)
         if u_norm:
@@ -335,7 +337,10 @@ class NLGCG:
             u_plus = previous_u_plus.copy()
         if not global_valid:
             # We have a global maximum x_k
-            epsilon = 0.5 * phi
+            if mode == "deterministic":
+                epsilon = 0.5 * phi
+            else:
+                epsilon /= 2
         return u_plus, epsilon, global_valid, phi_numerical
 
     def newton_step(
@@ -365,7 +370,7 @@ class NLGCG:
         max_radius: float,
         u_0: Measure = Measure(),
         c_0: float = 0,
-        mode: str = "stochastic",
+        mode: str = "stochastic_adaptive",
         inner_mode: str = "trust_region",
     ) -> tuple:
         self.max_radius = max_radius
