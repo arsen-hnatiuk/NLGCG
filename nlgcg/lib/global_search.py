@@ -5,6 +5,7 @@ import scipy as sp
 import logging
 import time
 import jax
+from itertools import product
 from typing import Callable, Union
 from sklearn.utils import gen_batches
 from lib.measure import Measure
@@ -31,6 +32,8 @@ class GlobalSearch:
         max_found_points: int = 100,
         max_newton_points: int = 1e3,
         newton_tolerance: float = 5e-2,
+        sampling_probability: float = 0.99,
+        sample_size=1000,
     ) -> None:
         self.Omega = Omega
         self.M = M
@@ -45,6 +48,11 @@ class GlobalSearch:
         self.max_found_points = max_found_points
         self.max_newton_points = int(max_newton_points)
         self.newton_tolerance = newton_tolerance
+        self.sampling_probabilty = sampling_probability
+        self.sample_size = sample_size
+        if mode == "deterministic_adaptive":
+            self.get_grid = self.deterministic_grid_adaptive
+            self.stop_search = 3
         if mode == "deterministic":
             self.get_grid = self.deterministic_grid
             self.stop_search = 5
@@ -54,8 +62,6 @@ class GlobalSearch:
         elif mode == "stochastic":
             self.get_grid = self.stochastic_grid
             self.stop_search = 3
-        self.sample_size = 1000
-        self.mesh_reduction_factor = 220
 
     def project_into_domain(self, x: np.ndarray) -> np.ndarray:
         # Project an array into domain, parallelized
@@ -136,6 +142,108 @@ class GlobalSearch:
         success = phi_val >= epsilon
         return success, grid, grid_vals, best_point, best_val
 
+    def split_point(self, mesh):
+        split_configurations = np.array(
+            list(product(range(2), repeat=self.Omega.shape[0]))
+        )
+        split_directions_raw = split_configurations - np.array(
+            [0.5] * self.Omega.shape[0]
+        )
+        split_directions = (
+            mesh
+            * split_directions_raw
+            / (2 * np.linalg.norm(split_directions_raw, axis=1)[:, np.newaxis])
+        )
+        return split_directions
+
+    def deterministic_grid_adaptive(
+        self,
+        u: Measure,
+        p_norm: Callable,
+        grad_p_u: Callable,
+        q_u: float,
+        epsilon: float,
+        radius: float,
+    ) -> tuple:
+        lipschitz_function = lambda x: np.linalg.norm(grad_p_u(x), axis=1)
+        first_point = np.mean(self.Omega, axis=1)
+        mesh = (
+            np.sqrt(self.Omega.shape[0])
+            * np.max([bound[1] - bound[0] for bound in self.Omega])
+            / 2
+        )
+        grid = np.array([first_point])
+        grid_vals = p_norm(grid)
+        all_points = grid.copy()
+        all_vals = grid_vals.copy()
+        if len(u.coefficients):
+            all_points = np.vstack([all_points, u.support])
+            all_vals = np.hstack((all_vals, p_norm(u.support)))
+
+        best_index = np.argmax(all_vals)
+        best_point = all_points[best_index].copy()
+        best_val = all_vals[best_index]
+        phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
+        success = phi_val >= epsilon
+        if success:
+            grid = np.vstack([grid, np.array([best_point])])
+            grid_vals = np.hstack((grid_vals, np.array([best_val])))
+            logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
+            return success, grid, grid_vals, best_point, best_val
+
+        while mesh > self.newton_tolerance:
+            lipschitzs = self.batch_compute(grid, lipschitz_function)
+
+            relevant_indices = grid_vals + lipschitzs * mesh > best_val
+            del lipschitzs
+            grid = grid[relevant_indices]
+
+            new_grid = grid.copy()
+            for _ in range(3):
+                split_directions_deterministic = self.split_point(mesh)
+                split_directions = split_directions_deterministic + np.random.normal(
+                    0,
+                    0.1 * mesh,
+                    size=split_directions_deterministic.shape,
+                )
+                new_grid = np.repeat(new_grid, len(split_directions), axis=0) + np.tile(
+                    split_directions, (len(new_grid), 1)
+                )
+                mesh /= 2
+            new_grid = self.project_into_domain(new_grid)
+            new_vals = p_norm(new_grid)
+            valid_indices = new_vals > 0
+            new_grid = new_grid[valid_indices].copy()
+            new_vals = new_vals[valid_indices].copy()
+
+            best_index = np.argmax(new_vals)
+            tentative_best_val = new_vals[best_index].copy()
+            if tentative_best_val > best_val:
+                best_val = tentative_best_val
+                best_point = new_grid[best_index].copy()
+                phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
+                success = phi_val >= epsilon
+                if success:
+                    grid = np.vstack([new_grid, np.array([best_point])])
+                    grid_vals = np.hstack((new_vals, np.array([best_val])))
+                    logging.info(f"Grid. {len(new_vals)} points, mesh: {mesh:.3E}")
+                    return success, grid, grid_vals, best_point, best_val
+
+            grid = new_grid.copy()
+            grid_vals = new_vals.copy()
+            del new_grid
+            del new_vals
+            logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
+
+        lipschitzs = self.batch_compute(grid, lipschitz_function)
+        relevant_indices = grid_vals + lipschitzs * mesh > best_val
+        del lipschitzs
+        grid = grid[relevant_indices]
+        grid_vals = grid_vals[relevant_indices]
+        grid = np.vstack([grid, np.array([best_point])])
+        grid_vals = np.hstack((grid_vals, np.array([best_val])))
+        return success, grid, grid_vals, best_point, best_val
+
     def stochastic_grid(
         self,
         u: Measure,
@@ -185,32 +293,66 @@ class GlobalSearch:
         success = phi_val >= epsilon
         return success, grid, grid_vals, best_point, best_val
 
-    def determine_step_size_sampling(self, mesh: float) -> float:
-        # Determine variance needed for sampled points to be within the mesh at given probability
-        probability_interval = [0.99, 0.999]  # Fraction of samples within mesh
-        incumbent_variance = (mesh**2) / self.Omega.shape[1]  # initial value
-        variance_upper = incumbent_variance
-        variance_lower = 2 * incumbent_variance
-        incumbent_probability = sp.special.gammainc(
-            self.Omega.shape[1] / 2, 0.5 * mesh**2 / incumbent_variance
-        )
-        while (incumbent_probability < probability_interval[0]) or (
-            incumbent_probability > probability_interval[1]
-        ):
-            if incumbent_probability < probability_interval[0]:
-                variance_upper = incumbent_variance
-            elif incumbent_probability > probability_interval[1]:
-                variance_lower = incumbent_variance
-            if variance_upper <= variance_lower:
-                # Upper bound not yet found
-                incumbent_variance /= 2
+    # def determine_step_size_sampling(self, mesh: float) -> float:
+    #     # Determine variance needed for sampled points to be within the mesh at given probability
+    #     probability_interval = [0.99, 0.999]  # Fraction of samples within mesh
+    #     incumbent_variance = (mesh**2) / self.Omega.shape[1]  # initial value
+    #     variance_upper = incumbent_variance
+    #     variance_lower = 2 * incumbent_variance
+    #     incumbent_probability = sp.special.gammainc(
+    #         self.Omega.shape[1] / 2, 0.5 * mesh**2 / incumbent_variance
+    #     )
+    #     while (incumbent_probability < probability_interval[0]) or (
+    #         incumbent_probability > probability_interval[1]
+    #     ):
+    #         if incumbent_probability < probability_interval[0]:
+    #             variance_upper = incumbent_variance
+    #         elif incumbent_probability > probability_interval[1]:
+    #             variance_lower = incumbent_variance
+    #         if variance_upper <= variance_lower:
+    #             # Upper bound not yet found
+    #             incumbent_variance /= 2
+    #         else:
+    #             # Binary search
+    #             incumbent_variance = (variance_lower + variance_upper) / 2
+    #         incumbent_probability = sp.special.gammainc(
+    #             self.Omega.shape[1] / 2, 0.5 * mesh**2 / incumbent_variance
+    #         )
+    #     return incumbent_variance
+
+    def sample_ball(self, size: int, radius: float) -> np.ndarray:
+        # Sample uniformly from a ball of given radius in the domain dimension
+        dim = self.Omega.shape[0]
+        x = np.random.normal(size=(size, dim))
+        x /= np.linalg.norm(x, axis=1)[:, np.newaxis]
+        u = np.random.random(size=(size, 1)) ** (1 / dim)
+        return radius * (x * u)
+
+    def compute_mesh_reduction(self) -> float:
+        dim = self.Omega.shape[0]
+        target_value = 1 - (1 - self.sampling_probabilty) ** (1 / self.sample_size)
+
+        def prob_function(value):
+            phi_1 = np.arccos(1 - 0.5 * value**2)
+            phi_2 = np.arccos(value / 2)
+            s_phi_1 = np.sin(phi_1) ** 2
+            s_phi_2 = np.sin(phi_2) ** 2
+            summand_1 = sp.special.betainc(0.5 * (dim + 1), 0.5, s_phi_1)
+            summand_2 = sp.special.betainc(0.5 * (dim + 1), 0.5, s_phi_2)
+            return 0.5 * (summand_1 + summand_2 * value**dim)
+
+        value_lower = 0
+        value_higher = 1
+        value = np.mean([value_lower, value_higher])
+        prob_value = prob_function(value)
+        while prob_value < 0.99 * target_value or prob_value > 1.01 * target_value:
+            if prob_value < target_value:
+                value_lower = value
             else:
-                # Binary search
-                incumbent_variance = (variance_lower + variance_upper) / 2
-            incumbent_probability = sp.special.gammainc(
-                self.Omega.shape[1] / 2, 0.5 * mesh**2 / incumbent_variance
-            )
-        return incumbent_variance
+                value_higher = value
+            value = np.mean([value_lower, value_higher])
+            prob_value = prob_function(value)
+        return value
 
     def batch_compute(
         self, inputs: np.ndarray, func: Callable, batch_size: int = int(1e4)
@@ -266,7 +408,7 @@ class GlobalSearch:
     ) -> tuple:
         lipschitz_function = lambda x: np.linalg.norm(grad_p_u(x), axis=1)
         success = False
-        mesh_reduction = 1 / (self.mesh_reduction_factor ** (1 / self.Omega.shape[0]))
+        mesh_reduction = self.compute_mesh_reduction()
         mesh = (
             max([bound[1] - bound[0] for bound in self.Omega])
             * np.sqrt(self.Omega.shape[0])
@@ -286,9 +428,6 @@ class GlobalSearch:
         phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
         success = phi_val >= epsilon
         if success:
-            if len(u.coefficients):
-                grid = np.vstack([grid, u.support])
-                grid_vals = np.hstack((grid_vals, p_norm(u.support)))
             logging.info(f"Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
             return success, grid, grid_vals, best_point, best_val
 
@@ -306,16 +445,9 @@ class GlobalSearch:
             grid, grid_vals, lipschitzs = self.separate_points(
                 grid, grid_vals, mesh, best_val, lipschitzs
             )
-            step_size = self.determine_step_size_sampling(mesh)
 
             # New points
-            sample_updates = np.random.multivariate_normal(
-                mean=np.zeros(self.Omega.shape[0]),
-                cov=step_size * np.eye(self.Omega.shape[0]),
-                size=self.sample_size * len(grid_vals),
-            )
-            # update_norms = np.linalg.norm(sample_updates, axis=1)
-            # logging.info(f"{np.mean(update_norms):.3f}, {np.std(update_norms):.3f}")
+            sample_updates = self.sample_ball(self.sample_size * len(grid_vals), mesh)
             starting_points = np.repeat(
                 grid, [self.sample_size] * len(grid_vals), axis=0
             )
@@ -327,8 +459,8 @@ class GlobalSearch:
                 points_new
             )  # might contain invalid points (0 vals)
             valid_indices = points_new_vals > 0
-            points_new = points_new[valid_indices]
-            points_new_vals = points_new_vals[valid_indices]
+            points_new = points_new[valid_indices].copy()
+            points_new_vals = points_new_vals[valid_indices].copy()
 
             # Add accepted new points to active tuples
             grid = np.vstack((grid, points_new))
@@ -344,9 +476,6 @@ class GlobalSearch:
                 phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
                 success = phi_val >= epsilon
                 if success:
-                    # if len(u.coefficients):
-                    #     grid = np.vstack([grid, u.support])
-                    #     grid_vals = np.hstack((grid_vals, p_norm(u.support)))
                     logging.info(f"Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
                     return success, grid, grid_vals, best_point, best_val
 

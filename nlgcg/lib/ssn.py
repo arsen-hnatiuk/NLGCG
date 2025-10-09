@@ -134,7 +134,7 @@ class SSN:
         prox_q = self.prox(q)  # The actual iterate
         psi_val = min(self.Psi(prox_q), self.Psi(q))
         k = 0
-        while psi_val > tol or self.j(prox_q) > initial_j:
+        while psi_val > tol:
             if k > self.maximum_iterations:
                 logging.info(
                     f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {psi_val:.3E} achieved"
@@ -174,6 +174,9 @@ class SSN:
         if self.j(prox_q) <= initial_j:
             return prox_q
         else:
+            logging.info(
+                f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: INITIAL OPTIMAL, {self.Psi(u_0):.3E} achieved"
+            )
             return u_0
 
 
