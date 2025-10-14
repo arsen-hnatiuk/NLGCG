@@ -4,6 +4,7 @@ import numpy as np
 from typing import Callable
 import logging
 import time
+import cvxpy as cp
 from itertools import product
 from lib.measure import Measure
 from lib.ssn import SSN
@@ -58,16 +59,21 @@ class AdaptiveRefinement:
         vertices: np.ndarray,
         coefs: np.ndarray,
     ) -> np.ndarray:
-        K_support_raw = self.kernel(vertices).T
-        signs = np.sign(coefs)
-        signs[signs == 0] = 1
-        K_support = np.multiply(K_support_raw, signs)
-        u_0 = np.abs(coefs)
+        t = time.time()
+        q = self.dual_problem_solver(vertices)
+        p_u = np.abs(self.kernel(vertices) @ q)
+        active_indices = p_u >= self.alpha - 1e-6
+        vertices = vertices[active_indices].copy()
+        coefs = coefs[active_indices].copy()
+        cvxpy_time = time.time() - t
+
+        t = time.time()
+        K_support = self.kernel(vertices).T
         ssn = SSN(
             K=K_support,
             alpha=self.alpha,
             target=self.target,
-            M=float((self.f(K_support_raw @ coefs) + self.g(coefs)) / self.alpha),
+            M=float((self.f(K_support @ coefs) + self.g(coefs)) / self.alpha),
             g=self.g,
             f=self.f,
             grad_f=self.grad_f,
@@ -77,16 +83,27 @@ class AdaptiveRefinement:
             maximum_iterations=self.ssn_steps,
             regularization="full",
         )
-        ssn_solution = ssn.solve(tol=self.machine_precision, u_0=u_0)
-        ssn_normal = ssn_solution * signs
-        ssn_clipped = (
-            np.maximum(ssn_solution, np.zeros(len(ssn_solution))) * signs
-        )  # The SSN in positive mode can return a better solution with wrong signs
-        solutions = [ssn_clipped, ssn_normal, coefs]
-        values = [self.f(K_support_raw @ cofs) + self.g(cofs) for cofs in solutions]
+        ssn_solution = ssn.solve(tol=self.machine_precision, u_0=coefs)
+        solutions = [ssn_solution, coefs]
+        values = [self.f(K_support @ cofs) + self.g(cofs) for cofs in solutions]
         best_value = np.argmin(values)
         new_coefs = solutions[best_value]
-        return new_coefs
+        new_vertices = vertices[new_coefs != 0].copy()
+        new_coefs = new_coefs[new_coefs != 0].copy()
+        ssn_time = time.time() - t
+        logging.info(f"cvxpy: {cvxpy_time:.3f}, ssn: {ssn_time:.3f}")
+        return new_vertices, new_coefs
+
+    def dual_problem_solver(self, vertices) -> np.ndarray:
+        q = cp.Variable(self.target.shape[0])
+        obj = cp.Maximize(-2 * self.target @ q - cp.sum(cp.square(q)))
+        kernel_vertices = self.kernel(vertices)
+        constraints = [
+            cp.abs(kernel_vertex @ q) <= self.alpha for kernel_vertex in kernel_vertices
+        ]
+        prob = cp.Problem(obj, constraints)
+        prob.solve(solver=cp.SCS, eps=1e-8)
+        return q.value
 
     def split_cell(
         self,
@@ -210,12 +227,12 @@ class AdaptiveRefinement:
             vertices = vertices
         else:
             cells_dict, vertices_dict, vertices = self.initiate()
-        active_set = vertices.copy()
-        coefs = np.zeros(len(active_set))
+        # active_set = vertices.copy()
+        # coefs = np.zeros(len(active_set))
         for iter in range(max_iters):
             if iter:
                 # Determine which cells to subdivide
-                subdivide_indices = []
+                subdivide_names = []
                 subdivide_edge = 0
                 upper_b_compute = 0
                 lower_b_compute = 0
@@ -274,50 +291,49 @@ class AdaptiveRefinement:
                             subdivide_edge = cell_edge
                     lower_b_compute += time.time() - t
 
-                del p_vals
-                del grad_p_vals
-                del hess_p_vals
-
                 # Subdivide cells
                 t = time.time()
-                new_vertices = []
-                new_indices = np.array([])
+                # new_vertices = []
+                # new_indices = np.array([])
                 for cell_name in subdivide_names:
                     cells_dict, vertices_dict, vertices, new_cells_names = (
                         self.split_cell(cell_name, cells_dict, vertices_dict, vertices)
                     )
-                    for name in new_cells_names:
-                        local_indices = vertices_dict[name]
-                        if not len(new_indices):
-                            new_indices = local_indices
-                        else:
-                            new_indices = np.hstack((new_indices, local_indices))
-                unique_new_indices = np.unique(new_indices)
-                new_vertices = vertices[unique_new_indices]
-                active_set = np.vstack((active_set, new_vertices))
-                coefs = np.hstack((coefs, np.zeros(len(new_vertices))))
-                provisory_u = Measure(support=active_set, coefficients=coefs)
-                active_set = provisory_u.support
-                coefs = provisory_u.coefficients
+                    # for name in new_cells_names:
+                    #     local_indices = vertices_dict[name]
+                    #     if not len(new_indices):
+                    #         new_indices = local_indices
+                    #     else:
+                    #         new_indices = np.hstack((new_indices, local_indices))
+                # unique_new_indices = np.unique(new_indices)
+                # new_vertices = vertices[unique_new_indices]
+                # active_set_raw = np.vstack((active_set, new_vertices))
+                # coefs_raw = np.hstack((coefs, np.zeros(len(new_vertices))))
+                # active_set, unique_indices = np.unique(
+                #     active_set_raw, axis=0, return_index=True
+                # )
+                # coefs = coefs_raw[unique_indices]
                 subdivide = time.time() - t
                 logging.info(
                     f"grad: {grad_compute:.3f}, kappa: {kappa_compute:.3f}, upper: {upper_b_compute:.3f}, lower: {lower_b_compute:.3f}, subdivide: {subdivide:.3f}"
                 )
 
+                del p_vals
+                del grad_p_vals
+                del hess_p_vals
+                # del active_set_raw
+
             # Determine iterate measure
-            t = time.time()
-            coefs = self.finite_dimensional_step(active_set, coefs)
-            active_set = active_set[coefs != 0].copy()
-            coefs = coefs[coefs != 0].copy()
-            u = Measure(support=active_set, coefficients=coefs)
+            support, coefs = self.finite_dimensional_step(
+                vertices, np.zeros(len(vertices))
+            )
+            # active_set = active_set[coefs != 0].copy()
+            # coefs = coefs[coefs != 0].copy()
+            u = Measure(support=support, coefficients=coefs)
             logging.info(
                 f"{iter + 1}: cells: {len(cells_dict)}, support: {len(u.coefficients)}, objective: {self.j(u, 0):.14E}"
-            )
-            q = -self.grad_f(
-                np.tensordot(self.kernel(active_set), coefs, axes=([0], [0]))
             )
             p_u = self.p(u, 0)
             grad_p_u = self.grad_p(u, 0)
             hess_p_u = self.hess_p(u, 0)
-            logging.info(f"ssn: {time.time() - t:.3f}")
-        return cells_dict, vertices_dict, vertices, coefs, u
+        return cells_dict, vertices_dict, vertices, u

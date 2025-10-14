@@ -29,7 +29,6 @@ class SSN:
         if all(self.K.shape):
             self.target = target
             self.alpha = alpha
-            self.g = lambda u: float(g(u[:-1]))
             self.f = f
             self.grad_f = grad_f
             self.hess_f = hess_f
@@ -47,6 +46,10 @@ class SSN:
             self.target_norm = np.mean(np.abs(self.target))
             self.maximum_iterations = maximum_iterations
             self.regularization = regularization
+            if regularization == "mixed":
+                self.g = lambda u: float(g(u[:-1]))
+            else:
+                self.g = g
             if mode == "unconstrained":
                 self.Psi = self.Psi_unconstrained
                 self.prox = self.prox_unconstrained
@@ -168,10 +171,10 @@ class SSN:
             psi_val = self.Psi(prox_q)
             k += 1
 
-        # logging.info(
-        #     f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
-        # )
         if self.j(prox_q) <= initial_j:
+            logging.info(
+                f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
+            )
             return prox_q
         else:
             logging.info(
