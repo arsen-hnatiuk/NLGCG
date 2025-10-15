@@ -46,7 +46,7 @@ class NLGCG:
         dual_variable_goodness: float = 0.5,
         ssn_steps: int = 100,
         min_radius: float = 0.01,  # For Trust Region
-        newton_tolerance: float = 2e-2,  # Tolerance for Newton steps in Global Search
+        newton_tolerance: float = 5e-2,  # Tolerance for Newton steps in Global Search
     ) -> None:
         self.target = target
         self.kernel = kernel

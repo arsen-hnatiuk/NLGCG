@@ -122,9 +122,9 @@ class GlobalSearch:
             np.array(
                 np.meshgrid(
                     *(
-                        np.linspace(bound[0], bound[1], self.global_search_resolution)[
-                            1:
-                        ]
+                        np.linspace(
+                            bound[0], bound[1], self.global_search_resolution + 1
+                        )[1:]
                         for bound in self.Omega
                     )
                 )
