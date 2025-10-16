@@ -127,7 +127,6 @@ class NLGCG:
             maximum_iterations=self.ssn_steps,
         )
         ssn_solution = ssn.solve(tol=Psi, u_0=u_0)
-        raw_Psi = ssn.Psi(ssn_solution)
         if mode == "positive":
             ssn_normal = ssn_solution * signs
             ssn_clipped = np.maximum(ssn_solution, np.zeros(len(ssn_solution))) * signs
@@ -166,7 +165,7 @@ class NLGCG:
         values = [self.j(u, c) for u, c in tuples]
         best_value = np.argmin(values)
         u_plus, c_plus = tuples[best_value]
-        return u_plus, c_plus, raw_Psi
+        return u_plus, c_plus
 
     def drop_step(self, u: Measure, c: float) -> tuple:
         if not len(u.coefficients):
@@ -401,7 +400,7 @@ class NLGCG:
                 dropped_tot += dropped
             else:
                 u_drop = u_plus.copy()
-            u_coef, c_coef, finite_psi = self.finite_dimensional_step(
+            u_coef, c_coef = self.finite_dimensional_step(
                 u_drop,
                 c_plus,
                 self.machine_precision,
@@ -443,7 +442,7 @@ class NLGCG:
             iterate_values = [self.j(*iterate) for iterate in all_iterates]
             choice_index = np.nanargmin(iterate_values)
             u, c = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
-            u, c, finite_psi = self.finite_dimensional_step(
+            u, c = self.finite_dimensional_step(
                 u,
                 c,
                 self.machine_precision,
