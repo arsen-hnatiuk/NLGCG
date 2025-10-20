@@ -1,6 +1,7 @@
 # This file may be used to create an environment using:
 # $ conda create --name <env> --file <this file>
 # platform: linux-64
+# created-by: conda 25.5.1
 _libgcc_mutex=0.1=main
 _openmp_mutex=5.1=1_gnu
 aom=3.6.0=h6a678d5_0
@@ -11,6 +12,7 @@ c-ares=1.34.5=hef5626c_0
 ca-certificates=2025.9.9=h06a4308_0
 cairo=1.18.4=h44eff21_0
 cffi=2.0.0=py311h4eded50_0
+cfgv=3.4.0=py311h06a4308_0
 clarabel=0.11.1=py311h1c792f7_0
 comm=0.2.1=py311h06a4308_0
 contourpy=1.3.1=py311hdb19cb5_0
@@ -21,9 +23,11 @@ cyrus-sasl=2.1.28=h1110e0f_3
 dav1d=1.2.1=h5eee18b_0
 debugpy=1.8.16=py311hbdd6827_0
 decorator=5.2.1=py311h06a4308_0
+distlib=0.3.8=py311h06a4308_0
 double-conversion=3.1.5=he6710b0_1
 executing=2.2.1=py311h06a4308_0
 expat=2.7.1=h6a678d5_0
+filelock=3.17.0=py311h06a4308_0
 fontconfig=2.15.0=h2c49b7f_0
 fonttools=4.60.1=py311hee96239_0
 freetype=2.13.3=h4a9f257_0
@@ -31,6 +35,7 @@ fribidi=1.0.10=h7b6447c_0
 graphite2=1.3.14=h295c915_1
 harfbuzz=10.2.0=hdfddeaa_1
 icu=73.1=h6a678d5_0
+identify=2.5.5=py311h06a4308_0
 ipykernel=6.30.1=py311h06a4308_0
 ipython=9.5.0=py311h06a4308_0
 ipython_pygments_lexers=1.1.1=py311h06a4308_0
@@ -99,6 +104,7 @@ mysql-common=9.3.0=h0021b1a_3
 mysql-libs=9.3.0=h797a5cd_3
 ncurses=6.5=h7934f7d_0
 nest-asyncio=1.6.0=py311h06a4308_0
+nodeenv=1.9.1=py311h06a4308_0
 numpy=2.0.1=py311h24aa872_1
 numpy-base=2.0.1=py311hbfb1bba_1
 openjpeg=2.5.2=h0d4d230_1
@@ -114,6 +120,8 @@ pillow=11.3.0=py311hb1c3d2d_0
 pip=25.2=pyhc872135_0
 pixman=0.46.4=h7934f7d_0
 platformdirs=4.3.7=py311h06a4308_0
+pre-commit=3.4.0=py311h06a4308_1
+pre_commit=3.4.0=hd3eb1b0_1
 prompt-toolkit=3.0.52=py311h06a4308_0
 prompt_toolkit=3.0.52=hd3eb1b0_0
 psutil=7.0.0=py311hee96239_0
@@ -127,6 +135,7 @@ pyqt=6.9.1=py311hc79087c_0
 pyqt6-sip=13.10.2=py311hee96239_0
 python=3.11.13=h1a3bd86_0
 python-dateutil=2.9.0post0=py311h06a4308_2
+pyyaml=6.0.2=py311h5eee18b_0
 pyzmq=27.1.0=py311hcf8288c_0
 qtbase=6.9.2=h46e0f57_1
 qtdeclarative=6.9.2=h55666de_1
@@ -153,6 +162,8 @@ tornado=6.5.1=py311h5eee18b_0
 traitlets=5.14.3=py311h06a4308_0
 typing_extensions=4.15.0=py311h06a4308_0
 tzdata=2025b=h04d1e81_0
+ukkonen=1.0.1=py311hdb19cb5_1
+virtualenv=20.28.0=py311h06a4308_0
 wayland=1.24.0=hdac8c69_0
 wcwidth=0.2.13=py311h06a4308_0
 wheel=0.45.1=py311h06a4308_0
@@ -176,6 +187,7 @@ xorg-libxshmfence=1.3.3=h9b100fa_0
 xorg-libxxf86vm=1.1.6=h9b100fa_0
 xorg-xorgproto=2024.1=h5eee18b_1
 xz=5.6.4=h5eee18b_1
+yaml=0.2.5=h7b6447c_0
 zeromq=4.3.5=hb0a5e54_1
 zlib=1.3.1=hb25bd0a_0
 zstd=1.5.7=h11fc155_0

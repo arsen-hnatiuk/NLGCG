@@ -144,6 +144,7 @@ class ParticleDescent:
         logging.info(f"0: objective {self.j(u, c):.14E}")
         objective_values = [self.j(u, c)]
         # logging.info(params)
+        param_update_threshold = 1e-4
         for iter in range(max_iters):
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
@@ -161,14 +162,23 @@ class ParticleDescent:
             r = r[keep_indices]
             self.kernel_sign = self.kernel_sign[keep_indices]
             theta = theta[keep_indices]
-            # theta[:, 0] = np.maximum(theta[:, 0], 1e-5)
             params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
             u = Measure(matrix=self.parameterize(r, theta))
             # c = self.finite_dimensional_step(u, c)
-            objective_values.append(self.j(u, c))
-            if (iter + 1) % 100 == 0:
+            obj = self.j(u, c)
+            # if obj > objective_values[-1]:
+            #     self.a_parameter *= 0.5
+            #     self.b_parameter *= 0.25
+            #     logging.info(f"alpha: {self.a_parameter}, beta: {self.b_parameter}")
+            # elif objective_values[-1] - obj < param_update_threshold:
+            #     self.a_parameter *= 5
+            #     self.b_parameter *= 10
+            #     param_update_threshold *= 0.01
+            #     logging.info(f"alpha: {self.a_parameter}, beta: {self.b_parameter}")
+            objective_values.append(obj)
+            if (iter + 1) % 1000 == 0:
                 logging.info(
-                    f"{iter + 1}: supp: {len(u.coefficients)}, objective {self.j(u, c):.14E}"
+                    f"{iter + 1}: supp: {len(u.coefficients)}, objective {obj:.14E}"
                 )
                 # self.b_parameter = min(self.a_parameter, self.b_parameter * 1.002)
                 # self.a_parameter *= 1.001
