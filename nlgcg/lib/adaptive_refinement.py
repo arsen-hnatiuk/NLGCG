@@ -3,6 +3,7 @@
 import numpy as np
 from typing import Callable
 import logging
+import matplotlib.pyplot as plt
 import time
 import cvxpy as cp
 from itertools import product
@@ -60,7 +61,7 @@ class AdaptiveRefinement:
         coefs: np.ndarray,
     ) -> np.ndarray:
         t = time.time()
-        q = self.dual_problem_solver(vertices)
+        q = self.dual_problem_solver(vertices, coefs)
         p_u = np.abs(self.kernel(vertices) @ q)
         active_indices = p_u >= self.alpha - 1e-6
         vertices = vertices[active_indices].copy()
@@ -94,42 +95,52 @@ class AdaptiveRefinement:
         logging.info(f"cvxpy: {cvxpy_time:.3f}, ssn: {ssn_time:.3f}")
         return new_vertices, new_coefs
 
-    def dual_problem_solver(self, vertices) -> np.ndarray:
+    def dual_problem_solver(self, vertices, coefficients) -> np.ndarray:
         q = cp.Variable(self.target.shape[0])
+        q.value = np.array(self.grad_f(self.kernel(vertices).T @ coefficients))
         obj = cp.Maximize(-2 * self.target @ q - cp.sum(cp.square(q)))
         kernel_vertices = self.kernel(vertices)
         constraints = [
-            cp.abs(kernel_vertex @ q) <= self.alpha for kernel_vertex in kernel_vertices
+            kernel_vertices @ q <= self.alpha,
+            -kernel_vertices @ q <= self.alpha,
         ]
         prob = cp.Problem(obj, constraints)
-        prob.solve(solver=cp.SCS, eps=1e-8)
+        prob.solve(solver=cp.SCS, eps=1e-8, max_iters=10000)
         return q.value
 
-    def split_cell(
+    def split_cells(
         self,
-        cell_name: str,
+        cell_names: list,
         cells_dict: dict,
         vertices_dict: dict,
         vertices: np.ndarray,
     ) -> tuple:
-        cell = cells_dict[cell_name]
-        lower = cell[:, 0]
-        upper = cell[:, 1]
-        mid = (lower + upper) / 2
-        diff = mid - lower
-        index_offset = len(vertices)
+        new_vertices = []
         new_cells_names = []
-        for i, config in enumerate(self.split_configurations):
-            new_cell_name = cell_name + str(config)
-            new_lower = lower + config * diff
-            new_upper = new_lower + diff
-            new_cell = np.vstack((new_lower, new_upper)).T
-            new_cell_vertices = new_cell[
-                np.arange(len(cell)), self.split_configurations
-            ]
-            cells_dict[new_cell_name] = new_cell
-            vertices = np.vstack((vertices, new_cell_vertices))
-            new_cells_names.append(new_cell_name)
+        index_offset = len(vertices)
+        for cell_name in cell_names:
+            cell = cells_dict[cell_name]
+            lower = cell[:, 0]
+            upper = cell[:, 1]
+            mid = (lower + upper) / 2
+            diff = mid - lower
+            for i, config in enumerate(self.split_configurations):
+                new_cell_name = cell_name + str(config)
+                new_lower = lower + config * diff
+                new_upper = new_lower + diff
+                new_cell = np.vstack((new_lower, new_upper)).T
+                new_cell_vertices = new_cell[
+                    np.arange(len(cell)), self.split_configurations
+                ]
+                if not len(new_vertices):
+                    new_vertices = new_cell_vertices
+                else:
+                    new_vertices = np.vstack((new_vertices, new_cell_vertices))
+                cells_dict[new_cell_name] = new_cell
+                new_cells_names.append(new_cell_name)
+            del cells_dict[cell_name]
+            del vertices_dict[cell_name]
+        vertices = np.vstack((vertices, new_vertices))
         unique_vertices, inverse_index = np.unique(
             vertices, axis=0, return_inverse=True
         )
@@ -140,8 +151,6 @@ class AdaptiveRefinement:
                 + (i + 1) * len(self.split_configurations)
             ]
             vertices_dict[new_cell_name] = cell_vertex_indices
-        del cells_dict[cell_name]
-        del vertices_dict[cell_name]
         return cells_dict, vertices_dict, unique_vertices, new_cells_names
 
     def initiate(self) -> tuple:
@@ -152,8 +161,8 @@ class AdaptiveRefinement:
         vertices = first_cell[np.arange(len(first_cell)), self.split_configurations]
         cells_dict = {first_cell_name: first_cell}
         vertices_dict = {first_cell_name: np.arange(len(vertices))}
-        cells_dict, vertices_dict, vertices, new_cells_names = self.split_cell(
-            first_cell_name, cells_dict, vertices_dict, vertices
+        cells_dict, vertices_dict, vertices, new_cells_names = self.split_cells(
+            [first_cell_name], cells_dict, vertices_dict, vertices
         )
         return cells_dict, vertices_dict, vertices
 
@@ -227,8 +236,9 @@ class AdaptiveRefinement:
             vertices = vertices
         else:
             cells_dict, vertices_dict, vertices = self.initiate()
-        # active_set = vertices.copy()
-        # coefs = np.zeros(len(active_set))
+        active_set = vertices.copy()
+        coefs = np.zeros(len(active_set))
+        q = np.array(self.grad_f(self.kernel(active_set).T @ coefs))
         for iter in range(max_iters):
             if iter:
                 # Determine which cells to subdivide
@@ -236,6 +246,7 @@ class AdaptiveRefinement:
                 subdivide_edge = 0
                 upper_b_compute = 0
                 lower_b_compute = 0
+                kappa_compute = 0
 
                 t = time.time()
                 p_vals = p_u(vertices)
@@ -243,8 +254,9 @@ class AdaptiveRefinement:
                 grad_compute = time.time() - t
                 t = time.time()
                 hess_p_vals = hess_p_u(vertices)
-                kappa_compute = time.time() - t
+                hess_compute = time.time() - t
                 for cell_name in cells_dict.keys():
+                    t = time.time()
                     cell = cells_dict[cell_name]
                     cell_indices = vertices_dict[cell_name]
                     cell_vertices = vertices[cell_indices]
@@ -253,9 +265,15 @@ class AdaptiveRefinement:
                         continue
                     cell_p_vals = p_vals[cell_indices]
                     cell_grad_p_vals = grad_p_vals[cell_indices]
+                    # kappa = self.hess_bound(
+                    #     q,
+                    #     cell,
+                    #     cell_vertices,
+                    # )
                     kappa = np.max(
                         np.linalg.norm(hess_p_vals[cell_indices], axis=(1, 2))
-                    )  # self.hess_bound(q, cell, cell_vertices) # Rough upper bound on the Hessian norm in the cell!!!
+                    )
+                    kappa_compute += time.time() - t
                     t = time.time()
                     upper_bound = self.alpha
                     for vertex, p_val, grad_p_val in zip(
@@ -263,11 +281,10 @@ class AdaptiveRefinement:
                     ):
                         inner_upper_bound = 0
                         for inner_vertex in cell_vertices:
-                            local_bound = (
-                                np.abs(p_val + grad_p_val @ (inner_vertex - vertex))
-                                + 0.5
-                                * kappa
-                                * np.linalg.norm(inner_vertex - vertex) ** 2
+                            local_bound = np.abs(
+                                p_val + grad_p_val @ (inner_vertex - vertex)
+                            ) + 0.5 * kappa * (inner_vertex - vertex) @ (
+                                inner_vertex - vertex
                             )
                             if local_bound > inner_upper_bound:
                                 inner_upper_bound = local_bound
@@ -281,59 +298,85 @@ class AdaptiveRefinement:
                         np.max(np.linalg.norm(cell_grad_p_vals, axis=1))
                         - kappa * cell_edge * self.vol_factor
                     )
-                    # lower_bound = 0
                     if upper_bound >= self.alpha and lower_bound <= 0:
                         if cell_edge > subdivide_edge:
                             subdivide_names = [cell_name]
                             subdivide_edge = cell_edge
                         elif cell_edge == subdivide_edge:
                             subdivide_names.append(cell_name)
-                            subdivide_edge = cell_edge
                     lower_b_compute += time.time() - t
 
                 # Subdivide cells
                 t = time.time()
-                # new_vertices = []
-                # new_indices = np.array([])
-                for cell_name in subdivide_names:
-                    cells_dict, vertices_dict, vertices, new_cells_names = (
-                        self.split_cell(cell_name, cells_dict, vertices_dict, vertices)
-                    )
-                    # for name in new_cells_names:
-                    #     local_indices = vertices_dict[name]
-                    #     if not len(new_indices):
-                    #         new_indices = local_indices
-                    #     else:
-                    #         new_indices = np.hstack((new_indices, local_indices))
-                # unique_new_indices = np.unique(new_indices)
-                # new_vertices = vertices[unique_new_indices]
-                # active_set_raw = np.vstack((active_set, new_vertices))
-                # coefs_raw = np.hstack((coefs, np.zeros(len(new_vertices))))
-                # active_set, unique_indices = np.unique(
-                #     active_set_raw, axis=0, return_index=True
-                # )
-                # coefs = coefs_raw[unique_indices]
+                new_vertices = []
+                new_indices = np.array([])
+                cells_dict, vertices_dict, vertices, new_cells_names = self.split_cells(
+                    subdivide_names, cells_dict, vertices_dict, vertices
+                )
+                for name in new_cells_names:
+                    local_indices = vertices_dict[name]
+                    if not len(new_indices):
+                        new_indices = local_indices
+                    else:
+                        new_indices = np.hstack((new_indices, local_indices))
+                unique_new_indices = np.unique(new_indices)
+                new_vertices = vertices[unique_new_indices]
+                active_set_raw = np.vstack((active_set, new_vertices))
+                coefs_raw = np.hstack((coefs, np.zeros(len(new_vertices))))
+                active_set, unique_indices = np.unique(
+                    active_set_raw, axis=0, return_index=True
+                )
+                coefs = coefs_raw[unique_indices]
                 subdivide = time.time() - t
                 logging.info(
-                    f"grad: {grad_compute:.3f}, kappa: {kappa_compute:.3f}, upper: {upper_b_compute:.3f}, lower: {lower_b_compute:.3f}, subdivide: {subdivide:.3f}"
+                    f"grad: {grad_compute:.3f}, hess: {hess_compute:.3f}, kappa: {kappa_compute:.3f}, upper: {upper_b_compute:.3f}, lower: {lower_b_compute:.3f}, subdivide: {subdivide:.3f}"
                 )
 
                 del p_vals
                 del grad_p_vals
                 del hess_p_vals
-                # del active_set_raw
+                del active_set_raw
+
+                # Specific display for the paper
+                n = 1000
+                xx = np.linspace(0, 1, n)
+                yy = np.linspace(0, 1, n)
+                fine_grid = np.zeros((n**2, 2))
+                X_grid, Y_grid = np.meshgrid(xx, yy)
+                fine_grid[:, 0], fine_grid[:, 1] = X_grid.ravel(), Y_grid.ravel()
+                grid_shape = X_grid.shape
+                for vertex in vertices:
+                    plt.plot(vertex[0], vertex[1], "o", c="black", markersize=1)
+                for vertex in new_vertices:
+                    plt.plot(vertex[0], vertex[1], "o", c="green", markersize=2)
+                Aqk = np.abs(p_u(fine_grid))
+                plt.contour(
+                    X_grid,
+                    Y_grid,
+                    Aqk.reshape(grid_shape),
+                    levels=[0.75 * self.alpha, 0.9 * self.alpha],
+                    colors="r",
+                    linestyles=["dotted", "dashed"],
+                )  #    plt.plot(fine_grid, Aqk, 'r--', linewidth=2)
+                plt.contourf(
+                    X_grid,
+                    Y_grid,
+                    Aqk.reshape(grid_shape),
+                    levels=[0.0, self.alpha],
+                    colors=[[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.5]],
+                    extend="max",
+                )
+                plt.show()
 
             # Determine iterate measure
-            support, coefs = self.finite_dimensional_step(
-                vertices, np.zeros(len(vertices))
-            )
-            # active_set = active_set[coefs != 0].copy()
-            # coefs = coefs[coefs != 0].copy()
-            u = Measure(support=support, coefficients=coefs)
+            active_set, coefs = self.finite_dimensional_step(active_set, coefs)
+            q = np.array(self.grad_f(self.kernel(active_set).T @ coefs))
+            u = Measure(support=active_set, coefficients=coefs)
             logging.info(
                 f"{iter + 1}: cells: {len(cells_dict)}, support: {len(u.coefficients)}, objective: {self.j(u, 0):.14E}"
             )
             p_u = self.p(u, 0)
             grad_p_u = self.grad_p(u, 0)
             hess_p_u = self.hess_p(u, 0)
+
         return cells_dict, vertices_dict, vertices, u
