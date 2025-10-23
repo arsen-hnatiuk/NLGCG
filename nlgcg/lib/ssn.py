@@ -171,15 +171,12 @@ class SSN:
             psi_val = self.Psi(prox_q)
             k += 1
 
+        # logging.info(
+        #     f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
+        # )
         if self.j(prox_q) <= initial_j:
-            logging.info(
-                f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
-            )
             return prox_q
         else:
-            logging.info(
-                f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: INITIAL OPTIMAL, {self.Psi(u_0):.3E} achieved"
-            )
             return u_0
 
 

@@ -67,9 +67,9 @@ class ParticleDescent:
         ]
         theta = np.array(np.meshgrid(*(grids_1d))).reshape(len(self.Omega), -1).T
         theta = np.vstack((theta, theta))  # Positive and negative support
-        c = 0
+        cs = np.array([0.01])
         self.kernel_sign = np.sign(r)
-        return r, theta, c
+        return r, theta, cs
 
     def finite_dimensional_step(
         self,
@@ -110,18 +110,21 @@ class ParticleDescent:
         self,
         r: np.ndarray,
         del_r: np.ndarray,
+        c: np.ndarray,
+        del_c: np.ndarray,
         theta: np.ndarray,
         del_theta: np.ndarray,
         mode: str = "canonical",
     ) -> tuple:
-        # logging.info(f"{r.shape}, {del_r.shape}, {theta.shape}, {del_theta.shape}")
         if mode == "canonical":
             r_retraction = r + del_r
+            c_retraction = c + del_c
             theta_retraction = theta + del_theta
         elif mode == "mirror":
             r_retraction = r * np.exp(del_r)  # /r
+            c_retraction = c + del_c
             theta_retraction = theta + del_theta
-        return r_retraction, theta_retraction
+        return r_retraction, c_retraction, theta_retraction
 
     def solve(
         self,
@@ -135,35 +138,49 @@ class ParticleDescent:
                 self.kernel_sign * u_0.coefficients * len(u_0.coefficients)
             )
             theta = u_0.support
-            c = c_0
+            cs = np.array([c_0])
         else:
-            r, theta, c = self.initial_distribution()
-        params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
+            r, theta, cs = self.initial_distribution()
+        # params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
         u = Measure(matrix=self.parameterize(r, theta))
+        c = -cs[0] ** 2  # + cs[1] ** 2
         # c = self.finite_dimensional_step(u, c)
         logging.info(f"0: objective {self.j(u, c):.14E}")
         objective_values = [self.j(u, c)]
         # logging.info(params)
-        param_update_threshold = 1e-4
+        # param_update_threshold = 1e-4
         for iter in range(max_iters):
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
+            inner = c * np.ones(self.constant_dim)
+            if len(u.coefficients):
+                inner += self.kernel(u.support).T @ u.coefficients
+            inner = self.grad_f(inner)
             r_update = (
                 -2
                 * self.a_parameter
                 # * r
                 * (-self.kernel_sign * p_u(theta) + self.alpha)
             )
+            cs_update = np.array(
+                [
+                    -self.a_parameter * inner @ np.ones(self.constant_dim),
+                ]
+            )
+            logging.info(cs_update)
             theta_update = (
                 self.b_parameter * self.kernel_sign * np.array(grad_p_u(theta)).T
             ).T
-            r, theta = self.retraction(r, r_update, theta, theta_update, mode="mirror")
+            r, cs, theta = self.retraction(
+                r, r_update, cs, cs_update, theta, theta_update, mode="mirror"
+            )
             keep_indices = np.logical_and(theta[:, 0] > 1e-5, np.abs(r) > 1e-4)
             r = r[keep_indices]
             self.kernel_sign = self.kernel_sign[keep_indices]
             theta = theta[keep_indices]
-            params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
+            # params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
             u = Measure(matrix=self.parameterize(r, theta))
+            c = -cs[0] ** 2  # + cs[1] ** 2
             # c = self.finite_dimensional_step(u, c)
             obj = self.j(u, c)
             # if obj > objective_values[-1]:
@@ -176,7 +193,10 @@ class ParticleDescent:
             #     param_update_threshold *= 0.01
             #     logging.info(f"alpha: {self.a_parameter}, beta: {self.b_parameter}")
             objective_values.append(obj)
-            if (iter + 1) % 1000 == 0:
+            if (iter + 1) % 100 == 0:
+                logging.info(
+                    f"r_delta: {np.linalg.norm(r_update)}, theta_delta: {np.linalg.norm(theta_update)}, c_update: {np.linalg.norm(cs_update)}"
+                )
                 logging.info(
                     f"{iter + 1}: supp: {len(u.coefficients)}, objective {obj:.14E}"
                 )
