@@ -381,9 +381,9 @@ class AdaptiveRefinement:
                 )
                 coefs = coefs_raw[unique_indices]
                 subdivide = time.time() - t
-                logging.info(
-                    f"kappa1: {kappa_compute1:.3f}, kappa2: {kappa_compute2:.3f}, kappa3: {kappa_compute3:.3f}, kappa4: {kappa_compute4:.3f}, kappa5: {kappa_compute5:.3f}, kappa6: {kappa_compute6:.3f}, kappa7: {kappa_compute7:.3f}"
-                )
+                # logging.info(
+                #     f"kappa1: {kappa_compute1:.3f}, kappa2: {kappa_compute2:.3f}, kappa3: {kappa_compute3:.3f}, kappa4: {kappa_compute4:.3f}, kappa5: {kappa_compute5:.3f}, kappa6: {kappa_compute6:.3f}, kappa7: {kappa_compute7:.3f}"
+                # )
                 logging.info(
                     f"grad: {grad_compute:.3f}, hess: {hess_compute:.3f}, kappa: {kappa_compute:.3f}, upper: {upper_b_compute:.3f}, lower: {lower_b_compute:.3f}, subdivide: {subdivide:.3f}"
                 )

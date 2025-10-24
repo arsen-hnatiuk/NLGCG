@@ -60,14 +60,14 @@ class ParticleDescent:
     def initial_distribution(self) -> tuple:
         r = np.ones(self.m ** self.Omega.shape[0])
         r = np.hstack((r, -r))
-        grids_1d = [np.logspace(-4, 0, self.m + 2)[1:-1]]
+        grids_1d = [np.logspace(-3, 0, self.m + 2)[1:-1]]
         grids_1d += [
             np.linspace(bound[0], bound[1], self.m + 2, endpoint=True)[1:-1]
             for bound in self.Omega[1:]
         ]
         theta = np.array(np.meshgrid(*(grids_1d))).reshape(len(self.Omega), -1).T
-        theta = np.vstack((theta, theta))  # Positive and negative support
-        cs = np.array([0.01])
+        theta = np.vstack((theta, theta * 1.000000001))  # Positive and negative support
+        cs = np.array([-1, 1])
         self.kernel_sign = np.sign(r)
         return r, theta, cs
 
@@ -122,7 +122,7 @@ class ParticleDescent:
             theta_retraction = theta + del_theta
         elif mode == "mirror":
             r_retraction = r * np.exp(del_r)  # /r
-            c_retraction = c + del_c
+            c_retraction = c * np.exp(del_c)
             theta_retraction = theta + del_theta
         return r_retraction, c_retraction, theta_retraction
 
@@ -143,7 +143,7 @@ class ParticleDescent:
             r, theta, cs = self.initial_distribution()
         # params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
         u = Measure(matrix=self.parameterize(r, theta))
-        c = -cs[0] ** 2  # + cs[1] ** 2
+        c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
         # c = self.finite_dimensional_step(u, c)
         logging.info(f"0: objective {self.j(u, c):.14E}")
         objective_values = [self.j(u, c)]
@@ -164,23 +164,24 @@ class ParticleDescent:
             )
             cs_update = np.array(
                 [
-                    -self.a_parameter * inner @ np.ones(self.constant_dim),
+                    (self.a_parameter) * inner @ np.ones(self.constant_dim),
+                    -(self.a_parameter) * inner @ np.ones(self.constant_dim),
                 ]
             )
-            logging.info(cs_update)
+            # logging.info(cs_update)
             theta_update = (
                 self.b_parameter * self.kernel_sign * np.array(grad_p_u(theta)).T
             ).T
             r, cs, theta = self.retraction(
                 r, r_update, cs, cs_update, theta, theta_update, mode="mirror"
             )
-            keep_indices = np.logical_and(theta[:, 0] > 1e-5, np.abs(r) > 1e-4)
+            keep_indices = np.logical_and(theta[:, 0] > 1e-6, np.abs(r) > 1e-4)
             r = r[keep_indices]
             self.kernel_sign = self.kernel_sign[keep_indices]
             theta = theta[keep_indices]
             # params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
             u = Measure(matrix=self.parameterize(r, theta))
-            c = -cs[0] ** 2  # + cs[1] ** 2
+            c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
             # c = self.finite_dimensional_step(u, c)
             obj = self.j(u, c)
             # if obj > objective_values[-1]:
@@ -194,11 +195,11 @@ class ParticleDescent:
             #     logging.info(f"alpha: {self.a_parameter}, beta: {self.b_parameter}")
             objective_values.append(obj)
             if (iter + 1) % 100 == 0:
+                # logging.info(
+                #     f"r_delta: {np.linalg.norm(r_update):.3E}, theta_delta: {np.linalg.norm(theta_update):.3E}, c_update: {np.linalg.norm(cs_update):.3E}"
+                # )
                 logging.info(
-                    f"r_delta: {np.linalg.norm(r_update)}, theta_delta: {np.linalg.norm(theta_update)}, c_update: {np.linalg.norm(cs_update)}"
-                )
-                logging.info(
-                    f"{iter + 1}: supp: {len(u.coefficients)}, objective {obj:.14E}"
+                    f"{iter + 1}: supp: {len(u.coefficients)}, c value: {c:.3E}, objective {obj:.14E}"
                 )
                 # self.b_parameter = min(self.a_parameter, self.b_parameter * 1.002)
                 # self.a_parameter *= 1.001
