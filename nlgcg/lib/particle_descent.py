@@ -3,6 +3,7 @@
 import numpy as np
 from typing import Callable
 import logging
+import time
 from lib.measure import Measure
 from lib.ssn import SSN
 
@@ -57,16 +58,40 @@ class ParticleDescent:
         matrix[:, 1:] = theta
         return matrix
 
+    def sample_domain(self, size: int, mode: str = "exponential") -> np.ndarray:
+        # Generate a uniform sample of shape (size,domain.shape[0]) in the given domain
+        columns = []
+        for i, bounds in enumerate(self.Omega):
+            if i == 0:
+                if mode == "exponential":
+                    columns.append(
+                        np.random.exponential(scale=bounds[1] / 2, size=(size, 1))
+                        + bounds[0]
+                    )
+                elif mode == "uniform":
+                    columns.append(
+                        np.random.sample((size, 1)) * (bounds[1] - bounds[0])
+                        + bounds[0]
+                    )
+            else:
+                columns.append(
+                    np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
+                )
+        sample = np.concatenate(columns, axis=1)
+        return sample
+
     def initial_distribution(self) -> tuple:
-        r = np.ones(self.m ** self.Omega.shape[0])
+        r = np.ones(self.m)
         r = np.hstack((r, -r))
-        grids_1d = [np.logspace(-3, 0, self.m + 2)[1:-1]]
-        grids_1d += [
-            np.linspace(bound[0], bound[1], self.m + 2, endpoint=True)[1:-1]
-            for bound in self.Omega[1:]
-        ]
-        theta = np.array(np.meshgrid(*(grids_1d))).reshape(len(self.Omega), -1).T
-        theta = np.vstack((theta, theta * 1.000000001))  # Positive and negative support
+        grid_pos = self.sample_domain(self.m)
+        grid_neg = self.sample_domain(self.m)
+        # grids_1d = [np.logspace(-3, 0, self.m + 2)[1:-1]]
+        # grids_1d += [
+        #     np.linspace(bound[0], bound[1], self.m + 2, endpoint=True)[1:-1]
+        #     for bound in self.Omega[1:]
+        # ]
+        # theta = np.array(np.meshgrid(*(grids_1d))).reshape(len(self.Omega), -1).T
+        theta = np.vstack((grid_pos, grid_neg))  # Positive and negative support
         cs = np.array([-1, 1])
         self.kernel_sign = np.sign(r)
         return r, theta, cs
@@ -132,6 +157,7 @@ class ParticleDescent:
         u_0: Measure = Measure(),
         c_0: float = 0,
     ):
+        t_0 = time.time()
         if len(u_0.coefficients):
             self.kernel_sign = np.sign(u_0.coefficients)
             r = self.kernel_sign * np.sqrt(
@@ -141,14 +167,12 @@ class ParticleDescent:
             cs = np.array([c_0])
         else:
             r, theta, cs = self.initial_distribution()
-        # params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
         u = Measure(matrix=self.parameterize(r, theta))
         c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
         # c = self.finite_dimensional_step(u, c)
         logging.info(f"0: objective {self.j(u, c):.14E}")
         objective_values = [self.j(u, c)]
-        # logging.info(params)
-        # param_update_threshold = 1e-4
+        times = [time.time() - t_0]
         for iter in range(max_iters):
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
@@ -168,7 +192,6 @@ class ParticleDescent:
                     -(self.a_parameter) * inner @ np.ones(self.constant_dim),
                 ]
             )
-            # logging.info(cs_update)
             theta_update = (
                 self.b_parameter * self.kernel_sign * np.array(grad_p_u(theta)).T
             ).T
@@ -179,21 +202,20 @@ class ParticleDescent:
             r = r[keep_indices]
             self.kernel_sign = self.kernel_sign[keep_indices]
             theta = theta[keep_indices]
-            # params = self.parameterize(r, theta).reshape(-1, 1 + self.Omega.shape[0])
             u = Measure(matrix=self.parameterize(r, theta))
             c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
             # c = self.finite_dimensional_step(u, c)
+            times.append(time.time() - t_0)
             obj = self.j(u, c)
-            # if obj > objective_values[-1]:
-            #     self.a_parameter *= 0.5
-            #     self.b_parameter *= 0.25
-            #     logging.info(f"alpha: {self.a_parameter}, beta: {self.b_parameter}")
-            # elif objective_values[-1] - obj < param_update_threshold:
-            #     self.a_parameter *= 5
-            #     self.b_parameter *= 10
-            #     param_update_threshold *= 0.01
-            #     logging.info(f"alpha: {self.a_parameter}, beta: {self.b_parameter}")
             objective_values.append(obj)
+            if np.isnan(obj) or np.isinf(obj):
+                logging.info("Divergence")
+                objective_values.append(obj)
+                return u, c, objective_values, times
+            elif np.linalg.norm(obj - objective_values[-2]) < self.machine_precision:
+                logging.info("Convergence")
+                objective_values.append(obj)
+                return u, c, objective_values, times
             if (iter + 1) % 100 == 0:
                 # logging.info(
                 #     f"r_delta: {np.linalg.norm(r_update):.3E}, theta_delta: {np.linalg.norm(theta_update):.3E}, c_update: {np.linalg.norm(cs_update):.3E}"
@@ -201,9 +223,4 @@ class ParticleDescent:
                 logging.info(
                     f"{iter + 1}: supp: {len(u.coefficients)}, c value: {c:.3E}, objective {obj:.14E}"
                 )
-                # self.b_parameter = min(self.a_parameter, self.b_parameter * 1.002)
-                # self.a_parameter *= 1.001
-                # logging.info(f"a: {self.a_parameter}, b:{self.b_parameter}")
-                # logging.info(f"min: {np.min(np.abs(r))}, max: {np.max(np.abs(r))}")
-                # logging.info(params)
-        return u, c, objective_values
+        return u, c, objective_values, times

@@ -247,6 +247,7 @@ class AdaptiveRefinement:
         vertices_dict: dict = {},
         vertices: np.ndarray = np.array([]),
     ) -> tuple:
+        t_0 = time.time()
         if len(cells_dict):
             cells_dict = cells_dict
             vertices_dict = vertices_dict
@@ -258,6 +259,7 @@ class AdaptiveRefinement:
         q = np.array(self.grad_f(self.kernel(active_set).T @ coefs))
         u = Measure()
         c = 0
+        times = [time.time() - t_0]
         objective_values = [self.j(u, c)]
         for iter in range(max_iters):
             if iter:
@@ -453,6 +455,7 @@ class AdaptiveRefinement:
                 )
             )
             u = Measure(support=active_set, coefficients=coefs)
+            times.append(time.time() - t_0)
             objective_values.append(self.j(u, c))
             logging.info(
                 f"{iter + 1}: cells: {len(cells_dict)}, support: {len(u.coefficients)}, objective: {self.j(u, c):.14E}"
@@ -461,4 +464,4 @@ class AdaptiveRefinement:
             grad_p_u = self.grad_p(u, c)
             hess_p_u = self.hess_p(u, c)
 
-        return cells_dict, vertices_dict, vertices, u, objective_values
+        return cells_dict, vertices_dict, vertices, u, objective_values, times
