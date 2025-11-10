@@ -260,6 +260,7 @@ class AdaptiveRefinement:
         u = Measure()
         c = 0
         times = [time.time() - t_0]
+        actives = [len(active_set)]
         objective_values = [self.j(u, c)]
         for iter in range(max_iters):
             if iter:
@@ -448,6 +449,7 @@ class AdaptiveRefinement:
                 # plt.show()
 
             # Determine iterate measure
+            actives.append(len(active_set))
             active_set, coefs, c = self.finite_dimensional_step(active_set, coefs, c, q)
             q = np.array(
                 self.grad_f(
@@ -464,4 +466,4 @@ class AdaptiveRefinement:
             grad_p_u = self.grad_p(u, c)
             hess_p_u = self.hess_p(u, c)
 
-        return cells_dict, vertices_dict, vertices, u, objective_values, times
+        return cells_dict, vertices_dict, vertices, u, objective_values, times, actives

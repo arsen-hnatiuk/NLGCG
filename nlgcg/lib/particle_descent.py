@@ -3,6 +3,10 @@
 import numpy as np
 from typing import Callable
 import logging
+import os
+
+# os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=52"
+import jax
 import time
 from lib.measure import Measure
 from lib.ssn import SSN
@@ -96,40 +100,40 @@ class ParticleDescent:
         self.kernel_sign = np.sign(r)
         return r, theta, cs
 
-    def finite_dimensional_step(
-        self,
-        u: Measure,
-        c: float,
-    ) -> float:
-        K_support = np.hstack(
-            (np.ones(self.constant_dim), np.zeros(self.kernel_dim - self.constant_dim))
-        ).reshape(-1, 1)
-        coefs = np.array([c])
-        invariable_kernel = np.zeros((self.kernel_dim))
-        if len(u.coefficients):
-            measure_K = self.kernel(u.support).T
-            invariable_kernel = measure_K @ u.coefficients
-        u_0 = coefs.copy()
-        ssn = SSN(
-            K=K_support,
-            alpha=self.alpha,
-            target=self.target,
-            M=float(self.j(u, c) / self.alpha),
-            g=self.g,
-            f=self.f,
-            grad_f=self.grad_f,
-            hess_f=self.hess_f,
-            invariable_kernel=invariable_kernel,
-            mode="unconstrained",
-            maximum_iterations=self.ssn_steps,
-        )
-        ssn_solution = ssn.solve(tol=self.machine_precision, u_0=u_0)
-        c_plus = ssn_solution[0]
-        cs = [c, c_plus]
-        values = [self.j(u, local_c) for local_c in cs]
-        best_value = np.argmin(values)
-        c_best = cs[best_value]
-        return c_best
+    # def finite_dimensional_step(
+    #     self,
+    #     u: Measure,
+    #     c: float,
+    # ) -> float:
+    #     K_support = np.hstack(
+    #         (np.ones(self.constant_dim), np.zeros(self.kernel_dim - self.constant_dim))
+    #     ).reshape(-1, 1)
+    #     coefs = np.array([c])
+    #     invariable_kernel = np.zeros((self.kernel_dim))
+    #     if len(u.coefficients):
+    #         measure_K = self.kernel(u.support).T
+    #         invariable_kernel = measure_K @ u.coefficients
+    #     u_0 = coefs.copy()
+    #     ssn = SSN(
+    #         K=K_support,
+    #         alpha=self.alpha,
+    #         target=self.target,
+    #         M=float(self.j(u, c) / self.alpha),
+    #         g=self.g,
+    #         f=self.f,
+    #         grad_f=self.grad_f,
+    #         hess_f=self.hess_f,
+    #         invariable_kernel=invariable_kernel,
+    #         mode="unconstrained",
+    #         maximum_iterations=self.ssn_steps,
+    #     )
+    #     ssn_solution = ssn.solve(tol=self.machine_precision, u_0=u_0)
+    #     c_plus = ssn_solution[0]
+    #     cs = [c, c_plus]
+    #     values = [self.j(u, local_c) for local_c in cs]
+    #     best_value = np.argmin(values)
+    #     c_best = cs[best_value]
+    #     return c_best
 
     def retraction(
         self,
@@ -169,58 +173,96 @@ class ParticleDescent:
             r, theta, cs = self.initial_distribution()
         u = Measure(matrix=self.parameterize(r, theta))
         c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
-        # c = self.finite_dimensional_step(u, c)
         logging.info(f"0: objective {self.j(u, c):.14E}")
         objective_values = [self.j(u, c)]
         times = [time.time() - t_0]
+
+        p_def = 0
+        innr = 0
+        update = 0
+        retr = 0
+        post = 0
+        ut = 0
+
         for iter in range(max_iters):
+            t = time.time()
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
+            p_def += time.time() - t
+            t = time.time()
             inner = c * np.ones(self.constant_dim)
             if len(u.coefficients):
                 inner += self.kernel(u.support).T @ u.coefficients
             inner = self.grad_f(inner)
+            innr += time.time() - t
+            t = time.time()
             r_update = (
                 -2
                 * self.a_parameter
                 # * r
                 * (-self.kernel_sign * p_u(theta) + self.alpha)
             )
+            inner_sum = np.sum(inner)
             cs_update = np.array(
                 [
-                    (self.a_parameter) * inner @ np.ones(self.constant_dim),
-                    -(self.a_parameter) * inner @ np.ones(self.constant_dim),
+                    (self.a_parameter) * inner_sum,
+                    -(self.a_parameter) * inner_sum,
                 ]
             )
             theta_update = (
                 self.b_parameter * self.kernel_sign * np.array(grad_p_u(theta)).T
             ).T
+            update += time.time() - t
+            t = time.time()
             r, cs, theta = self.retraction(
                 r, r_update, cs, cs_update, theta, theta_update, mode="mirror"
             )
-            keep_indices = np.logical_and(theta[:, 0] > 1e-6, np.abs(r) > 1e-4)
+            retr += time.time() - t
+            t = time.time()
+            keep_indices = np.logical_and(theta[:, 0] > 1e-6, np.abs(r) > 1e-7)
             r = r[keep_indices]
             self.kernel_sign = self.kernel_sign[keep_indices]
             theta = theta[keep_indices]
-            u = Measure(matrix=self.parameterize(r, theta))
             c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
-            # c = self.finite_dimensional_step(u, c)
+            post += time.time() - t
+            t = time.time()
+            u = Measure(matrix=self.parameterize(r, theta))
+            ut += time.time() - t
             times.append(time.time() - t_0)
             obj = self.j(u, c)
             objective_values.append(obj)
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
-                objective_values.append(obj)
-                return u, c, objective_values, times
-            elif np.linalg.norm(obj - objective_values[-2]) < self.machine_precision:
+                return u, c, objective_values, times, False
+            elif (
+                np.max(np.abs(obj - np.array(objective_values[-101:])))
+                < self.machine_precision
+            ):
                 logging.info("Convergence")
-                objective_values.append(obj)
-                return u, c, objective_values, times
-            if (iter + 1) % 100 == 0:
+                return u, c, objective_values, times, True
+            elif (
+                len(objective_values) > 100
+                and obj - np.max(objective_values[-101:-1]) > 0
+            ):
+                logging.info("Divergence")
+                return u, c, objective_values, times, False
+            if (iter + 1) % 1000 == 0:
+
+                # logging.info(obj - np.max(objective_values[-101:-1]))
+                # logging.info(np.max(np.abs(obj - np.array(objective_values[-101:]))))
                 # logging.info(
                 #     f"r_delta: {np.linalg.norm(r_update):.3E}, theta_delta: {np.linalg.norm(theta_update):.3E}, c_update: {np.linalg.norm(cs_update):.3E}"
+                # )
+                # logging.info(
+                #     f"p: {p_def:.3E}, inner: {innr:.3E}, update: {update:.3E}, retr: {retr:.3E}, post: {post:.3E}, ut: {ut:.3E}"
                 # )
                 logging.info(
                     f"{iter + 1}: supp: {len(u.coefficients)}, c value: {c:.3E}, objective {obj:.14E}"
                 )
-        return u, c, objective_values, times
+                p_def = 0
+                innr = 0
+                update = 0
+                retr = 0
+                post = 0
+                ut = 0
+        return u, c, objective_values, times, True
