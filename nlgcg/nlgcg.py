@@ -259,6 +259,7 @@ class NLGCG:
         q_u: float,
         radii: np.ndarray,
         mode: str = "stochastic_adaptive",
+        temperature: float = 1.0,
     ) -> tuple:
         j_initial = self.j(u, c)
         condition = False
@@ -279,7 +280,7 @@ class NLGCG:
             newton_tolerance=self.newton_tolerance,
         )
         best_val, found_points, global_valid = global_search_object.solve(
-            u, c, epsilon, q_u, p_u, radius
+            u, c, epsilon, q_u, p_u, radius, temperature
         )
         phi = self.M * max(best_val - self.alpha, 0) + q_u
         u_norm = np.linalg.norm(u.coefficients, ord=1)
@@ -371,6 +372,7 @@ class NLGCG:
         c_0: float = 0,
         mode: str = "stochastic_adaptive",
         inner_mode: str = "trust_region",
+        temperature: float = 1.0,
     ) -> tuple:
         self.max_radius = max_radius
         self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
@@ -455,7 +457,7 @@ class NLGCG:
 
             t = time.time()
             u_plus, epsilon, global_valid, phi_numerical = self.lgcg_step(
-                p_u, u, c, epsilon, q_u, radii, mode
+                p_u, u, c, epsilon, q_u, radii, mode, temperature
             )
             c_plus = c
             lgcg_lazy += int(global_valid)

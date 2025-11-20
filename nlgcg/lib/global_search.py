@@ -28,7 +28,7 @@ class GlobalSearch:
         len_target: int,
         grad_p: Callable,
         hess_p: Callable,
-        mode: str = "stochastic",
+        mode: str = "stochastic_adaptive",
         max_found_points: int = 100,
         max_newton_points: int = 1e3,
         newton_tolerance: float = 5e-2,
@@ -117,6 +117,7 @@ class GlobalSearch:
         q_u: float,
         epsilon: float,
         radius: float,
+        temperature: float = 1.0,
     ) -> np.ndarray:
         grid = (
             np.array(
@@ -164,6 +165,7 @@ class GlobalSearch:
         q_u: float,
         epsilon: float,
         radius: float,
+        temperature: float = 1.0,
     ) -> tuple:
         lipschitz_function = lambda x: np.linalg.norm(grad_p_u(x), axis=1)
         first_point = np.mean(self.Omega, axis=1)
@@ -252,6 +254,7 @@ class GlobalSearch:
         q_u: float,
         epsilon: float,
         radius: float,
+        temperature: float = 1.0,
     ) -> tuple:
         grid = self.sample_domain(int(1e4), u)
         grid_vals = p_norm(grid)
@@ -405,15 +408,18 @@ class GlobalSearch:
         q_u: float,
         epsilon: float,
         radius: float,
+        temperature: float = 1.0,
     ) -> tuple:
         lipschitz_function = lambda x: np.linalg.norm(grad_p_u(x), axis=1)
         success = False
+        sampled_local = False
         mesh_reduction = self.compute_mesh_reduction()
         mesh = (
             max([bound[1] - bound[0] for bound in self.Omega])
             * np.sqrt(self.Omega.shape[0])
             / 2
         )  # radius of sampling domain
+        mesh *= temperature  # allow for local sampling from the beginning
 
         grid = self.sample_domain(self.sample_size, u)
         if len(u.coefficients):
@@ -431,7 +437,7 @@ class GlobalSearch:
             logging.info(f"Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
             return success, grid, grid_vals, best_point, best_val
 
-        while mesh > self.newton_tolerance:
+        while mesh > self.newton_tolerance or not sampled_local:
             if not len(lipschitzs):
                 lipschitzs = self.batch_compute(grid, lipschitz_function)
             else:
@@ -454,13 +460,13 @@ class GlobalSearch:
             points_new_raw = starting_points + sample_updates  # new trial points
             points_new = self.project_into_domain(points_new_raw)
 
-            # Compute the P values of trial points
+            # Compute the |p| values of trial points
             points_new_vals = p_norm(
                 points_new
             )  # might contain invalid points (0 vals)
             valid_indices = points_new_vals > 0
-            points_new = points_new[valid_indices].copy()
-            points_new_vals = points_new_vals[valid_indices].copy()
+            points_new = points_new[valid_indices]
+            points_new_vals = points_new_vals[valid_indices]
 
             # Add accepted new points to active tuples
             grid = np.vstack((grid, points_new))
@@ -483,6 +489,8 @@ class GlobalSearch:
             del starting_points
             del points_new_raw
             del points_new_vals
+
+            sampled_local = True  # We want to enter the loop at least once
 
             logging.info(f"Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
 
@@ -544,11 +552,12 @@ class GlobalSearch:
         q_u: float,
         p_u: Callable,
         radius: float,
+        temperature: float = 1.0,
     ) -> tuple:
         p_norm = lambda x: np.abs(np.array(np.nan_to_num(p_u(x))))
         grad_p_u = self.grad_p(u, c)
         success, grid, grid_vals, best_point, best_val = self.get_grid(
-            u, p_norm, grad_p_u, q_u, epsilon, radius
+            u, p_norm, grad_p_u, q_u, epsilon, radius, temperature
         )
         if success:
             return self.post_process_global_search(
