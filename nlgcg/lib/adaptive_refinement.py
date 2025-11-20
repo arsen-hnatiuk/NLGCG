@@ -20,7 +20,6 @@ class AdaptiveRefinement:
     def __init__(
         self,
         observations: np.ndarray,
-        variance_exponent: float,
         j: Callable,
         p: Callable,  # Dual variable
         grad_p: Callable,
@@ -35,6 +34,7 @@ class AdaptiveRefinement:
         f: Callable,
         grad_f: Callable,
         hess_f: Callable,
+        variance_exponent: float = 0,
         ssn_steps: int = 100,
     ):
         self.observations = observations
@@ -183,62 +183,62 @@ class AdaptiveRefinement:
         )
         return cells_dict, vertices_dict, vertices
 
-    def hess_bound(
-        self, q: np.ndarray, cell: np.ndarray, vertices: np.ndarray
-    ) -> float:
-        kappa = 0
-        min_variance = np.min(vertices[:, 0])
-        for obs_ind, obs in enumerate(self.observations):
-            obs_in_cell = False
-            for i, bound in enumerate(cell[1:]):
-                if bound[0] <= obs[i] <= bound[1]:
-                    obs_in_cell = True
-                else:
-                    obs_in_cell = False
-                    break
-            vertex_distances = np.linalg.norm(vertices[:, 1:] - obs, axis=1)
-            if obs_in_cell:
-                closest_point = obs.copy()
-            else:
-                closest_point = vertices[np.argmin(vertex_distances)][1:]
-            min_dist = np.linalg.norm(obs - closest_point)
-            max_dist = np.max(vertex_distances)
-            adjusted_closest_point = np.hstack((closest_point, min_variance))
+    # def hess_bound(
+    #     self, q: np.ndarray, cell: np.ndarray, vertices: np.ndarray
+    # ) -> float:
+    #     kappa = 0
+    #     min_variance = np.min(vertices[:, 0])
+    #     for obs_ind, obs in enumerate(self.observations):
+    #         obs_in_cell = False
+    #         for i, bound in enumerate(cell[1:]):
+    #             if bound[0] <= obs[i] <= bound[1]:
+    #                 obs_in_cell = True
+    #             else:
+    #                 obs_in_cell = False
+    #                 break
+    #         vertex_distances = np.linalg.norm(vertices[:, 1:] - obs, axis=1)
+    #         if obs_in_cell:
+    #             closest_point = obs.copy()
+    #         else:
+    #             closest_point = vertices[np.argmin(vertex_distances)][1:]
+    #         min_dist = np.linalg.norm(obs - closest_point)
+    #         max_dist = np.max(vertex_distances)
+    #         adjusted_closest_point = np.hstack((closest_point, min_variance))
 
-            kernel_factor = (
-                self.kernel(adjusted_closest_point.reshape(1, -1))[0][obs_ind]
-                / min_variance**2
-            )
-            summand_1 = max(
-                abs(max_dist**2 / min_variance**2 - 1),
-                abs(min_dist**2 / min_variance**2 - 1),
-            )
-            summand_2 = (
-                max(
-                    abs(2 - self.variance_exponent - max_dist**2 / min_variance**2),
-                    abs(2 - self.variance_exponent - min_dist**2 / min_variance**2),
-                )
-                * 2
-                * max_dist
-                / min_variance
-            )
-            summand_31 = abs(
-                self.variance_exponent**2
-                - self.variance_exponent
-                + (2 * self.variance_exponent - 3) * max_dist**2 / min_variance**2
-                + max_dist**4 / min_variance**4
-            )
-            summand_32 = abs(
-                self.variance_exponent**2
-                - self.variance_exponent
-                + (2 * self.variance_exponent - 3) * min_dist**2 / min_variance**2
-                + min_dist**4 / min_variance**4
-            )
-            summand_33 = abs(2 * self.variance_exponent - 9 / 4)
-            summand_3 = max(summand_31, summand_32, summand_33)
-            hess_bound = kernel_factor * (summand_1 + summand_2 + summand_3)
-            kappa += hess_bound * abs(q[obs_ind])
-        return kappa
+    #         kernel_factor = (
+    #             self.kernel(adjusted_closest_point.reshape(1, -1))[0][obs_ind]
+    #             / min_variance**2
+    #         )
+    #         summand_1 = max(
+    #             abs(max_dist**2 / min_variance**2 - 1),
+    #             abs(min_dist**2 / min_variance**2 - 1),
+    #         )
+    #         summand_2 = (
+    #             max(
+    #                 abs(2 - self.variance_exponent - max_dist**2 / min_variance**2),
+    #                 abs(2 - self.variance_exponent - min_dist**2 / min_variance**2),
+    #             )
+    #             * 2
+    #             * max_dist
+    #             / min_variance
+    #         )
+    #         summand_31 = abs(
+    #             self.variance_exponent**2
+    #             - self.variance_exponent
+    #             + (2 * self.variance_exponent - 3) * max_dist**2 / min_variance**2
+    #             + max_dist**4 / min_variance**4
+    #         )
+    #         summand_32 = abs(
+    #             self.variance_exponent**2
+    #             - self.variance_exponent
+    #             + (2 * self.variance_exponent - 3) * min_dist**2 / min_variance**2
+    #             + min_dist**4 / min_variance**4
+    #         )
+    #         summand_33 = abs(2 * self.variance_exponent - 9 / 4)
+    #         summand_3 = max(summand_31, summand_32, summand_33)
+    #         hess_bound = kernel_factor * (summand_1 + summand_2 + summand_3)
+    #         kappa += hess_bound * abs(q[obs_ind])
+    #     return kappa
 
     def solve(
         self,
