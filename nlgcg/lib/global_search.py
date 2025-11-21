@@ -296,33 +296,6 @@ class GlobalSearch:
         success = phi_val >= epsilon
         return success, grid, grid_vals, best_point, best_val
 
-    # def determine_step_size_sampling(self, mesh: float) -> float:
-    #     # Determine variance needed for sampled points to be within the mesh at given probability
-    #     probability_interval = [0.99, 0.999]  # Fraction of samples within mesh
-    #     incumbent_variance = (mesh**2) / self.Omega.shape[1]  # initial value
-    #     variance_upper = incumbent_variance
-    #     variance_lower = 2 * incumbent_variance
-    #     incumbent_probability = sp.special.gammainc(
-    #         self.Omega.shape[1] / 2, 0.5 * mesh**2 / incumbent_variance
-    #     )
-    #     while (incumbent_probability < probability_interval[0]) or (
-    #         incumbent_probability > probability_interval[1]
-    #     ):
-    #         if incumbent_probability < probability_interval[0]:
-    #             variance_upper = incumbent_variance
-    #         elif incumbent_probability > probability_interval[1]:
-    #             variance_lower = incumbent_variance
-    #         if variance_upper <= variance_lower:
-    #             # Upper bound not yet found
-    #             incumbent_variance /= 2
-    #         else:
-    #             # Binary search
-    #             incumbent_variance = (variance_lower + variance_upper) / 2
-    #         incumbent_probability = sp.special.gammainc(
-    #             self.Omega.shape[1] / 2, 0.5 * mesh**2 / incumbent_variance
-    #         )
-    #     return incumbent_variance
-
     def sample_ball(self, size: int, radius: float) -> np.ndarray:
         # Sample uniformly from a ball of given radius in the domain dimension
         dim = self.Omega.shape[0]
@@ -396,8 +369,6 @@ class GlobalSearch:
                 separated_points = np.vstack((separated_points, [point]))
                 separated_vals = np.append(separated_vals, val)
                 separated_lipschitzs = np.append(separated_lipschitzs, lipschitz)
-            # if len(separated_vals) >= self.max_found_points:  # self.max_newton_points:
-            #     break
         return separated_points, separated_vals, separated_lipschitzs
 
     def stochastic_grid_adaptive(
@@ -433,8 +404,8 @@ class GlobalSearch:
         best_val = grid_vals[best_index]
         phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
         success = phi_val >= epsilon
+        logging.info(f"Global Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
         if success:
-            logging.info(f"Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
             return success, grid, grid_vals, best_point, best_val
 
         while mesh > self.newton_tolerance or not sampled_local:
@@ -472,6 +443,7 @@ class GlobalSearch:
             grid = np.vstack((grid, points_new))
             grid_vals = np.append(grid_vals, points_new_vals)
             mesh = mesh_reduction * mesh
+            logging.info(f"Local Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
 
             # Update the best value
             best_index = np.argmax(points_new_vals)
@@ -482,7 +454,6 @@ class GlobalSearch:
                 phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
                 success = phi_val >= epsilon
                 if success:
-                    logging.info(f"Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
                     return success, grid, grid_vals, best_point, best_val
 
             del sample_updates
@@ -491,8 +462,6 @@ class GlobalSearch:
             del points_new_vals
 
             sampled_local = True  # We want to enter the loop at least once
-
-            logging.info(f"Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
 
         if not len(lipschitzs):
             lipschitzs = self.batch_compute(grid, lipschitz_function)
@@ -504,84 +473,31 @@ class GlobalSearch:
         grid, grid_vals, lipschitzs = self.separate_points(
             grid, grid_vals, mesh, best_val, lipschitzs
         )
-        # if len(u.coefficients):
-        #     grid = np.vstack([grid, u.support])
-        #     grid_vals = np.hstack((grid_vals, p_norm(u.support)))
         return success, grid, grid_vals, best_point, best_val
 
-    def post_process_global_search(
+    def newton_steps(
         self,
-        success: bool,
+        p_norm: Callable,
+        grad_p: Callable,
+        hess_p: Callable,
         grid: np.ndarray,
         grid_vals: np.ndarray,
+        epsilon: float,
         best_point: np.ndarray,
         best_val: float,
-        radius: float,
-    ) -> tuple:
-        valid_indices = np.where(
-            np.logical_and(
-                grid_vals >= self.alpha,
-                grid_vals
-                > self.alpha + (best_val - self.alpha) * self.dual_variable_goodness,
-            )
-        )[0]
-        valid_grid = grid[valid_indices]
-        valid_grid_vals = grid_vals[valid_indices]
-        order_indices = np.argsort(valid_grid_vals)[::-1]
-        order_grid = valid_grid[order_indices][: self.max_found_points]
-
-        if not len(order_grid):
-            found_points = np.array([best_point])
-        else:
-            found_points = np.array([order_grid[0]])
-        for point in order_grid[1:]:
-            local_distances = np.linalg.norm(found_points - point, axis=1)
-            if np.all(local_distances > 2 * radius):
-                found_points = np.vstack((found_points, point))
-        return (
-            best_val,
-            found_points,
-            success,
-        )
-
-    def solve(
-        self,
-        u: Measure,
-        c: float,
-        epsilon: float,
         q_u: float,
-        p_u: Callable,
-        radius: float,
-        temperature: float = 1.0,
     ) -> tuple:
-        p_norm = lambda x: np.abs(np.array(np.nan_to_num(p_u(x))))
-        grad_p_u = self.grad_p(u, c)
-        success, grid, grid_vals, best_point, best_val = self.get_grid(
-            u, p_norm, grad_p_u, q_u, epsilon, radius, temperature
-        )
-        if success:
-            return self.post_process_global_search(
-                success, grid, grid_vals, best_point, best_val, radius
-            )
-
-        # # Select best grid points as start for Newton
-        # order_indices = np.argsort(grid_vals)[::-1][: self.max_newton_points]
-        # grid = grid[order_indices]
-        # grid_vals = grid_vals[order_indices]
         logging.info(f"Newton start points: {len(grid_vals)}")
-
-        # Optimize the grid with Newton steps
-        grad_p = self.grad_p(u, c)
-        hess_p = self.hess_p(u, c)
+        success = False
+        batching_factor = (
+            self.len_target * self.Omega.shape[0] * (self.Omega.shape[0] + 1)
+            + 2 * self.Omega.shape[0]
+            + 1
+        )
+        batch_size = int(self.batching_constant // batching_factor)
         optimize_grid = np.array([True] * grid.shape[0])
         point_steps = 0
         while point_steps < self.stop_search:
-            batching_factor = (
-                self.len_target * self.Omega.shape[0] * (self.Omega.shape[0] + 1)
-                + 2 * self.Omega.shape[0]
-                + 1
-            )
-            batch_size = int(self.batching_constant // batching_factor)
             for batch in gen_batches(len(grid), batch_size):
                 optimize_batch = optimize_grid[batch]
                 batch_points = grid[batch][optimize_batch]
@@ -634,9 +550,7 @@ class GlobalSearch:
                     phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
                     success = phi_val >= epsilon
                     if success:
-                        return self.post_process_global_search(
-                            success, grid, grid_vals, best_point, best_val, radius
-                        )
+                        return success, grid, grid_vals, best_point, best_val
 
                 del new_points_plus
                 del new_points_minus
@@ -646,6 +560,93 @@ class GlobalSearch:
                 del p_vals
 
             point_steps += 1
+
+        return success, grid, grid_vals, best_point, best_val
+
+    def post_process_global_search(
+        self,
+        success: bool,
+        grid: np.ndarray,
+        grid_vals: np.ndarray,
+        best_point: np.ndarray,
+        best_val: float,
+        radius: float,
+    ) -> tuple:
+        valid_indices = np.where(
+            np.logical_and(
+                grid_vals >= self.alpha,
+                grid_vals
+                > self.alpha + (best_val - self.alpha) * self.dual_variable_goodness,
+            )
+        )[0]
+        valid_grid = grid[valid_indices]
+        valid_grid_vals = grid_vals[valid_indices]
+        order_indices = np.argsort(valid_grid_vals)[::-1]
+        order_grid = valid_grid[order_indices][: self.max_found_points]
+
+        if not len(order_grid):
+            found_points = np.array([best_point])
+        else:
+            found_points = np.array([order_grid[0]])
+        for point in order_grid[1:]:
+            local_distances = np.linalg.norm(found_points - point, axis=1)
+            if np.all(local_distances > 2 * radius):
+                found_points = np.vstack((found_points, point))
+        return (
+            best_val,
+            found_points,
+            success,
+        )
+
+    def solve(
+        self,
+        u: Measure,
+        c: float,
+        epsilon: float,
+        q_u: float,
+        p_u: Callable,
+        radius: float,
+        temperature: float = 1.0,
+    ) -> tuple:
+        p_norm = lambda x: np.abs(np.array(np.nan_to_num(p_u(x))))
+        grad_p = self.grad_p(u, c)
+        hess_p = self.hess_p(u, c)
+
+        if len(u.support):
+            # Perform Newton on current support points
+            grid = u.support.copy()
+            grid_vals = p_norm(grid)
+            max_ind = np.argmax(grid_vals)
+            best_val = grid_vals[max_ind]
+            best_point = grid[max_ind].copy()
+            success, grid, grid_vals, best_point, best_val = self.newton_steps(
+                p_norm,
+                grad_p,
+                hess_p,
+                grid,
+                grid_vals,
+                epsilon,
+                best_point,
+                best_val,
+                q_u,
+            )
+            if success:
+                return self.post_process_global_search(
+                    success, grid, grid_vals, best_point, best_val, radius
+                )
+
+        success, grid, grid_vals, best_point, best_val = self.get_grid(
+            u, p_norm, grad_p, q_u, epsilon, radius, temperature
+        )
+        if success:
+            return self.post_process_global_search(
+                success, grid, grid_vals, best_point, best_val, radius
+            )
+
+        # Optimize the grid with Newton steps
+        success, grid, grid_vals, best_point, best_val = self.newton_steps(
+            p_norm, grad_p, hess_p, grid, grid_vals, epsilon, best_point, best_val, q_u
+        )
 
         return self.post_process_global_search(
             success, grid, grid_vals, best_point, best_val, radius

@@ -100,41 +100,6 @@ class ParticleDescent:
         self.kernel_sign = np.sign(r)
         return r, theta, cs
 
-    # def finite_dimensional_step(
-    #     self,
-    #     u: Measure,
-    #     c: float,
-    # ) -> float:
-    #     K_support = np.hstack(
-    #         (np.ones(self.constant_dim), np.zeros(self.kernel_dim - self.constant_dim))
-    #     ).reshape(-1, 1)
-    #     coefs = np.array([c])
-    #     invariable_kernel = np.zeros((self.kernel_dim))
-    #     if len(u.coefficients):
-    #         measure_K = self.kernel(u.support).T
-    #         invariable_kernel = measure_K @ u.coefficients
-    #     u_0 = coefs.copy()
-    #     ssn = SSN(
-    #         K=K_support,
-    #         alpha=self.alpha,
-    #         target=self.target,
-    #         M=float(self.j(u, c) / self.alpha),
-    #         g=self.g,
-    #         f=self.f,
-    #         grad_f=self.grad_f,
-    #         hess_f=self.hess_f,
-    #         invariable_kernel=invariable_kernel,
-    #         mode="unconstrained",
-    #         maximum_iterations=self.ssn_steps,
-    #     )
-    #     ssn_solution = ssn.solve(tol=self.machine_precision, u_0=u_0)
-    #     c_plus = ssn_solution[0]
-    #     cs = [c, c_plus]
-    #     values = [self.j(u, local_c) for local_c in cs]
-    #     best_value = np.argmin(values)
-    #     c_best = cs[best_value]
-    #     return c_best
-
     def retraction(
         self,
         r: np.ndarray,
@@ -197,10 +162,7 @@ class ParticleDescent:
             innr += time.time() - t
             t = time.time()
             r_update = (
-                -2
-                * self.a_parameter
-                # * r
-                * (-self.kernel_sign * p_u(theta) + self.alpha)
+                -2 * self.a_parameter * (-self.kernel_sign * p_u(theta) + self.alpha)
             )
             inner_sum = np.sum(inner)
             cs_update = np.array(
