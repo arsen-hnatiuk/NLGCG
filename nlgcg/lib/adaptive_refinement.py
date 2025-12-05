@@ -66,11 +66,13 @@ class AdaptiveRefinement:
         coefs: np.ndarray,
         c: float,
         q_0: np.ndarray,
+        cvxpy_factor: float = 0.5,
     ) -> np.ndarray:
         t = time.time()
+        cvxpy_len = len(vertices)
         q = self.dual_problem_solver(vertices, q_0)
         p_u = np.abs(self.kernel(vertices) @ q)
-        active_indices = p_u >= self.alpha - 1e-6
+        active_indices = p_u >= self.alpha * cvxpy_factor
         vertices = vertices[active_indices].copy()
         coefs = coefs[active_indices].copy()
         cvxpy_time = time.time() - t
@@ -81,6 +83,7 @@ class AdaptiveRefinement:
         ).reshape(-1, 1)
         K_support = np.hstack((self.kernel(vertices).T, K_support))
         u_0 = np.hstack((coefs, c))
+        ssn_len = len(u_0)
         ssn = SSN(
             K=K_support,
             alpha=self.alpha,
@@ -105,7 +108,9 @@ class AdaptiveRefinement:
         new_vertices = vertices[new_coefs != 0].copy()
         new_coefs = new_coefs[new_coefs != 0].copy()
         ssn_time = time.time() - t
-        logging.info(f"cvxpy: {cvxpy_time:.3f}, ssn: {ssn_time:.3f}")
+        logging.info(
+            f"cvxpy: time {cvxpy_time:.3f} len {cvxpy_len}, ssn: {ssn_time:.3f} len {ssn_len}"
+        )
         return new_vertices, new_coefs, new_c
 
     def dual_problem_solver(self, vertices: np.ndarray, q_0: np.ndarray) -> np.ndarray:
@@ -120,6 +125,46 @@ class AdaptiveRefinement:
         prob = cp.Problem(obj, constraints)
         prob.solve(solver=cp.SCS, eps=1e-8, max_iters=10000)
         return q.value
+
+    # def full_dual_problem(self, vertices: np.ndarray, q_0: np.ndarray) -> tuple:
+    #     q = self.dual_problem_solver(vertices, q_0)
+    #     t = time.time()
+    #     p_u = np.abs(self.kernel(vertices) @ q)
+    #     active_indices = p_u >= self.alpha * 0.75
+    #     vertices = vertices[active_indices].copy()
+    #     coefs = np.zeros(len(vertices))
+    #     c = 0
+
+    #     K_support = np.hstack(
+    #         (np.ones(self.constant_dim), np.zeros(self.kernel_dim - self.constant_dim))
+    #     ).reshape(-1, 1)
+    #     K_support = np.hstack((self.kernel(vertices).T, K_support))
+    #     u_0 = np.hstack((coefs, c))
+    #     ssn = SSN(
+    #         K=K_support,
+    #         alpha=self.alpha,
+    #         target=self.target,
+    #         M=float((self.f(K_support @ u_0) + self.g(u_0[:-1])) / self.alpha),
+    #         g=self.g,
+    #         f=self.f,
+    #         grad_f=self.grad_f,
+    #         hess_f=self.hess_f,
+    #         invariable_kernel=np.zeros(len(K_support)),
+    #         mode="unconstrained",
+    #         maximum_iterations=self.ssn_steps,
+    #         regularization="mixed",
+    #     )
+    #     ssn_solution = ssn.solve(tol=self.machine_precision, u_0=u_0)
+    #     solutions = [ssn_solution, u_0]
+    #     values = [self.f(K_support @ sol) + self.g(sol[:-1]) for sol in solutions]
+    #     best_value = np.argmin(values)
+    #     best_sol = solutions[best_value]
+    #     new_coefs = best_sol[:-1]
+    #     new_c = best_sol[-1]
+    #     new_vertices = vertices[new_coefs != 0].copy()
+    #     new_coefs = new_coefs[new_coefs != 0].copy()
+    #     inactive_time = time.time() - t
+    #     return new_vertices, new_coefs, new_c, inactive_time
 
     def split_cells(
         self,
@@ -246,8 +291,10 @@ class AdaptiveRefinement:
         cells_dict: dict = {},
         vertices_dict: dict = {},
         vertices: np.ndarray = np.array([]),
+        max_time: int = 1e6,
     ) -> tuple:
         t_0 = time.time()
+        running_time = 0
         if len(cells_dict):
             cells_dict = cells_dict
             vertices_dict = vertices_dict
@@ -261,64 +308,37 @@ class AdaptiveRefinement:
         c = 0
         times = [time.time() - t_0]
         actives = [len(active_set)]
+        supports = [len(u.coefficients)]
         objective_values = [self.j(u, c)]
         for iter in range(max_iters):
+            inner_t = time.time()
             if iter:
                 # Determine which cells to subdivide
                 subdivide_names = []
                 # subdivide_dict = {}
                 # subdivide_cells = {}
                 subdivide_edge = 0
-                upper_b_compute = 0
-                lower_b_compute = 0
-                kappa_compute1 = 0
-                kappa_compute2 = 0
-                kappa_compute3 = 0
-                kappa_compute4 = 0
-                kappa_compute5 = 0
-                kappa_compute6 = 0
-                kappa_compute7 = 0
-                kappa_compute = 0
 
                 t = time.time()
                 p_vals = np.array(p_u(vertices))
                 grad_p_vals = np.array(grad_p_u(vertices))
-                grad_compute = time.time() - t
-                t = time.time()
                 hess_p_vals = np.array(hess_p_u(vertices))
                 hess_norms = np.linalg.norm(hess_p_vals, axis=(1, 2))
-                hess_compute = time.time() - t
                 for cell_name in cells_dict.keys():
-                    t0 = time.time()
                     cell = cells_dict[cell_name]
-                    kappa_compute1 += time.time() - t0
-                    t = time.time()
                     cell_indices = vertices_dict[cell_name]
-                    kappa_compute2 += time.time() - t
-                    t = time.time()
                     cell_vertices = vertices[cell_indices]
-                    kappa_compute3 += time.time() - t
-                    t = time.time()
                     cell_edge = cell[0, 1] - cell[0, 0]
                     if cell_edge < subdivide_edge:
                         continue
-                    kappa_compute4 += time.time() - t
-                    t = time.time()
                     cell_p_vals = p_vals[cell_indices]
-                    kappa_compute5 += time.time() - t
-                    t = time.time()
                     cell_grad_p_vals = grad_p_vals[cell_indices]
-                    kappa_compute6 += time.time() - t
-                    t = time.time()
                     # kappa = self.hess_bound(
                     #     q,
                     #     cell,
                     #     cell_vertices,
                     # )
                     kappa = np.max(hess_norms[cell_indices])
-                    kappa_compute7 += time.time() - t
-                    kappa_compute += time.time() - t0
-                    t = time.time()
                     upper_bound = self.alpha
                     for vertex, p_val, grad_p_val in zip(
                         cell_vertices, cell_p_vals, cell_grad_p_vals
@@ -336,8 +356,6 @@ class AdaptiveRefinement:
                             upper_bound = inner_upper_bound
                         if upper_bound < self.alpha:
                             break
-                    upper_b_compute += time.time() - t
-                    t = time.time()
                     lower_bound = (
                         np.max(np.linalg.norm(cell_grad_p_vals, axis=1))
                         - kappa * cell_edge * self.vol_factor
@@ -360,10 +378,8 @@ class AdaptiveRefinement:
                             subdivide_names.append(cell_name)
                             # subdivide_dict[cell_name] = c
                             # subdivide_cells[cell_name] = cell
-                    lower_b_compute += time.time() - t
 
                 # Subdivide cells
-                t = time.time()
                 new_vertices = []
                 new_indices = np.array([])
                 cells_dict, vertices_dict, vertices, new_cells_names = self.split_cells(
@@ -383,13 +399,7 @@ class AdaptiveRefinement:
                     active_set_raw, axis=0, return_index=True
                 )
                 coefs = coefs_raw[unique_indices]
-                subdivide = time.time() - t
-                # logging.info(
-                #     f"kappa1: {kappa_compute1:.3f}, kappa2: {kappa_compute2:.3f}, kappa3: {kappa_compute3:.3f}, kappa4: {kappa_compute4:.3f}, kappa5: {kappa_compute5:.3f}, kappa6: {kappa_compute6:.3f}, kappa7: {kappa_compute7:.3f}"
-                # )
-                logging.info(
-                    f"grad: {grad_compute:.3f}, hess: {hess_compute:.3f}, kappa: {kappa_compute:.3f}, upper: {upper_b_compute:.3f}, lower: {lower_b_compute:.3f}, subdivide: {subdivide:.3f}"
-                )
+                logging.info(f"outer_time: {time.time()-t:.3f}")
 
                 del p_vals
                 del grad_p_vals
@@ -457,13 +467,28 @@ class AdaptiveRefinement:
                 )
             )
             u = Measure(support=active_set, coefficients=coefs)
+            inactive_time = 0
             times.append(time.time() - t_0)
             objective_values.append(self.j(u, c))
+            supports.append(len(u.coefficients))
             logging.info(
                 f"{iter + 1}: cells: {len(cells_dict)}, support: {len(u.coefficients)}, objective: {self.j(u, c):.14E}"
             )
+            if time.time() - t_0 > max_time:
+                break
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
             hess_p_u = self.hess_p(u, c)
+            running_time += time.time() - inner_t - inactive_time
+            # logging.info(f"running time: {running_time:.3f}")
 
-        return cells_dict, vertices_dict, vertices, u, objective_values, times, actives
+        return (
+            cells_dict,
+            vertices_dict,
+            vertices,
+            u,
+            objective_values,
+            times,
+            actives,
+            supports,
+        )

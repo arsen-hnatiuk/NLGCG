@@ -84,11 +84,11 @@ class ParticleDescent:
         sample = np.concatenate(columns, axis=1)
         return sample
 
-    def initial_distribution(self) -> tuple:
+    def initial_distribution(self, mode: str = "exponential") -> tuple:
         r = np.ones(self.m)
         r = np.hstack((r, -r))
-        grid_pos = self.sample_domain(self.m)
-        grid_neg = self.sample_domain(self.m)
+        grid_pos = self.sample_domain(self.m, mode=mode)
+        grid_neg = self.sample_domain(self.m, mode=mode)
         # grids_1d = [np.logspace(-3, 0, self.m + 2)[1:-1]]
         # grids_1d += [
         #     np.linspace(bound[0], bound[1], self.m + 2, endpoint=True)[1:-1]
@@ -123,8 +123,10 @@ class ParticleDescent:
     def solve(
         self,
         max_iters: int = 1000,
+        max_time: int = 1e6,
         u_0: Measure = Measure(),
         c_0: float = 0,
+        mode: str = "exponential",
     ):
         t_0 = time.time()
         if len(u_0.coefficients):
@@ -135,12 +137,13 @@ class ParticleDescent:
             theta = u_0.support
             cs = np.array([c_0])
         else:
-            r, theta, cs = self.initial_distribution()
+            r, theta, cs = self.initial_distribution(mode=mode)
         u = Measure(matrix=self.parameterize(r, theta))
         c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
         logging.info(f"0: objective {self.j(u, c):.14E}")
         objective_values = [self.j(u, c)]
         times = [time.time() - t_0]
+        supports = [len(u.coefficients)]
 
         p_def = 0
         innr = 0
@@ -193,21 +196,22 @@ class ParticleDescent:
             times.append(time.time() - t_0)
             obj = self.j(u, c)
             objective_values.append(obj)
+            supports.append(len(u.coefficients))
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
-                return u, c, objective_values, times, False
+                return u, c, objective_values, supports, times, False
             elif (
                 np.max(np.abs(obj - np.array(objective_values[-101:])))
                 < self.machine_precision
             ):
                 logging.info("Convergence")
-                return u, c, objective_values, times, True
+                return u, c, objective_values, supports, times, True
             elif (
                 len(objective_values) > 100
                 and obj - np.max(objective_values[-101:-1]) > 0
             ):
-                logging.info("Divergence")
-                return u, c, objective_values, times, False
+                logging.info(f"Divergence: {obj}, {np.max(objective_values[-101:-1])}")
+                return u, c, objective_values, supports, times, False
             if (iter + 1) % 1000 == 0:
 
                 # logging.info(obj - np.max(objective_values[-101:-1]))
@@ -227,4 +231,7 @@ class ParticleDescent:
                 retr = 0
                 post = 0
                 ut = 0
-        return u, c, objective_values, times, True
+            if time.time() - t_0 > max_time:
+                logging.info("Max time reached")
+                break
+        return u, c, objective_values, supports, times, True
