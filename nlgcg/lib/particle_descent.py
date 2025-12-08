@@ -69,7 +69,7 @@ class ParticleDescent:
             if i == 0:
                 if mode == "exponential":
                     columns.append(
-                        np.random.exponential(scale=bounds[1] / 2, size=(size, 1))
+                        np.random.exponential(scale=bounds[1] / 10, size=(size, 1))
                         + bounds[0]
                     )
                 elif mode == "uniform":
@@ -79,7 +79,8 @@ class ParticleDescent:
                     )
             else:
                 columns.append(
-                    np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0]
+                    (np.random.sample((size, 1)) * (bounds[1] - bounds[0]) + bounds[0])
+                    * 1.2
                 )
         sample = np.concatenate(columns, axis=1)
         return sample

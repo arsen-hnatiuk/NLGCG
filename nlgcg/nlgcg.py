@@ -420,8 +420,8 @@ class NLGCG:
 
             t = time.time()
             full_parameters = np.hstack((parameters.flatten(), c_ks))
-            e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
-            logging.info(f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}")
+            # e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
+            # logging.info(f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}")
 
             if len(u_ks.coefficients):
                 full_parameters_new = self.newton_step(
