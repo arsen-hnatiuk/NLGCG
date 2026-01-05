@@ -247,7 +247,7 @@ class NLGCG:
             except np.linalg.LinAlgError:
                 # If the Hessian contains nan, we cannot compute a radius
                 radii.append(self.max_radius)
-        logging.info(radii)
+        # logging.info(radii)
         return radii
 
     def lgcg_step(
@@ -454,6 +454,19 @@ class NLGCG:
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
             ssn_2_time = time.time() - t
+            # if k > 2:
+            #     K_support = np.hstack(
+            #         (
+            #             np.ones(self.constant_dim),
+            #             np.zeros(self.kernel_dim - self.constant_dim),
+            #         )
+            #     )
+            #     logging.info(u.duality_pairing(self.kernel).shape)
+            #     logging.info(K_support.shape)
+            #     logging.info(
+            #         f"SSSS: {K_support @ self.grad_f(u.duality_pairing(self.kernel)+ c*K_support)}"
+            #     )
+            #     logging.info(p_u(u.support))
 
             t = time.time()
             u_plus, epsilon, global_valid, phi_numerical = self.lgcg_step(

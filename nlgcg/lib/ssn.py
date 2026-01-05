@@ -76,6 +76,22 @@ class SSN:
         variable_part = max(0, np.max(to_maximize))
         return constant_part + variable_part
 
+    # def Psi_positive(self, u: np.ndarray) -> np.ndarray:
+    #     u = u.copy()
+    #     p = self.p(u)
+    #     constant_part = -np.matmul(p, u) + self.g(u)
+    #     regularization_summand = self.alpha * np.ones(p.shape)
+    #     if self.regularization == "mixed":
+    #         constant_variable_part = p[-1]
+    #         if len(p) > 1:
+    #             variable_variable_part = np.max(p[:-1] - self.alpha)
+    #         else:
+    #             variable_variable_part = 0
+    #         variable_part = max(0, variable_variable_part, constant_variable_part)
+    #     else:
+    #         variable_part = max(0, np.max(p - regularization_summand))
+    #     return max(np.abs(constant_part), variable_part)
+
     def Psi_positive(self, u: np.ndarray) -> np.ndarray:
         # sup_v <p(u),v-u>+g(u)-g(v), adjusted for numerical stability
         u = u.copy()
