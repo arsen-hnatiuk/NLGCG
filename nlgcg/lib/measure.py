@@ -1,20 +1,36 @@
 import numpy as np
 from typing import Callable, Union
-import logging
 
 
 class Measure:
     # An implementation of a class that represents finitely supported measures on Omega
     def __init__(
         self,
+        matrix: np.ndarray = np.array([]),
         support: np.ndarray = np.array([]),
         coefficients: np.ndarray = np.array([]),
     ) -> None:
-        support, index = np.unique(np.array(support), axis=0, return_index=True)
-        coefficients = np.array(coefficients)[index].astype(float)
-        non_zero_index = np.where(coefficients != 0)[0]
+        if len(matrix):
+            # Supports and coefficients are encodes in a single matrix
+            if len(matrix.shape) == 1:
+                matrix = matrix.reshape(1, -1)
+            coefficients = matrix[:, 0]
+            support = matrix[:, 1:]
+        support, index, inverse_index, frequencies = np.unique(
+            np.array(support),
+            axis=0,
+            return_index=True,
+            return_inverse=True,
+            return_counts=True,
+        )
+        coefficients_processed = np.array(coefficients)[index].astype(float)
+        repeat_indices = np.where(frequencies > 1)[0]
+        for ind in repeat_indices:
+            repeat_positions = np.where(inverse_index == ind)[0]
+            coefficients_processed[ind] = np.sum(coefficients[repeat_positions])
+        non_zero_index = np.where(coefficients_processed != 0)[0]
         self.support = support[non_zero_index]
-        self.coefficients = coefficients[non_zero_index]
+        self.coefficients = coefficients_processed[non_zero_index]
         assert len(self.support) == len(
             self.coefficients
         ), "The support and coefficients must have the same length"
@@ -29,20 +45,23 @@ class Measure:
                 self.support = np.vstack([self.support, point])
                 self.coefficients = np.append(self.coefficients, 0)
 
-    def duality_pairing(self, fct: Union[np.ndarray, Callable]) -> float:
+    def duality_pairing(self, fct: Union[np.ndarray, Callable], y_dimension=0) -> float:
         # Compute the duality pairing of the measure with a function defined on Omega
         if not len(self.support):
-            return 0
+            if y_dimension:
+                return np.zeros(y_dimension)
+            else:
+                return 0
         if type(fct) == np.ndarray:
             values = fct[self.support.flatten()]
         else:
             values = fct(self.support.copy())
         if len(values.shape) > 1:
-            values = values.T
-            result = values @ self.coefficients
-            result = result.flatten()
+            # values = values.T
+            result = np.tensordot(values, self.coefficients, axes=([0], [0]))
+            # result = result.flatten()
         else:
-            result = values @ self.coefficients
+            result = np.tensordot(values, self.coefficients, axes=([0], [0]))
         return result
 
     def copy(self) -> "Measure":
@@ -50,6 +69,11 @@ class Measure:
         return Measure(
             support=self.support.copy(), coefficients=self.coefficients.copy()
         )
+
+    def to_matrix(self, param_dimension: float = 0) -> np.ndarray:
+        if not len(self.support):
+            return np.hstack((0, np.ones(param_dimension))).reshape(1, -1)
+        return np.hstack((self.coefficients.copy().reshape(-1, 1), self.support.copy()))
 
     def __add__(self, other: "Measure") -> "Measure":
         # Add two measures
@@ -82,6 +106,4 @@ class Measure:
         return new
 
     def __str__(self) -> str:
-        return (
-            f"Measure with support {self.support} and coefficients {self.coefficients}"
-        )
+        return f"Measure with support\n{self.support}\nand coefficients\n{self.coefficients}"
