@@ -3,10 +3,10 @@ import logging
 import time
 import jax
 from typing import Callable
-from lib.ssn import SSN
-from lib.newton import Newton
-from lib.global_search import GlobalSearch
-from lib.measure import Measure
+from .lib.ssn import SSN
+from .lib.newton import Newton
+from .lib.global_search import GlobalSearch
+from .lib.measure import Measure
 
 jax.config.update("jax_enable_x64", True)
 

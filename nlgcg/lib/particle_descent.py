@@ -5,11 +5,10 @@ from typing import Callable
 import logging
 import os
 
-# os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=52"
 import jax
 import time
-from lib.measure import Measure
-from lib.ssn import SSN
+from ..lib.measure import Measure
+from ..lib.ssn import SSN
 
 logging.basicConfig(
     level=logging.DEBUG,

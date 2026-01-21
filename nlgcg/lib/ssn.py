@@ -2,7 +2,7 @@
 
 import numpy as np
 import logging
-from lib.default_values import *
+from ..lib.default_values import *
 
 logging.basicConfig(
     level=logging.DEBUG,

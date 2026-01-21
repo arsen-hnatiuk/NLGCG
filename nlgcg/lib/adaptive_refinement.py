@@ -8,8 +8,8 @@ import time
 import cvxpy as cp
 import random
 from itertools import product
-from lib.measure import Measure
-from lib.ssn import SSN
+from ..lib.measure import Measure
+from ..lib.ssn import SSN
 
 logging.basicConfig(
     level=logging.DEBUG,
