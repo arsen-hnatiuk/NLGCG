@@ -35,6 +35,7 @@ class ParticleDescent:
         grad_f: Callable,
         hess_f: Callable,
         ssn_steps: int = 100,
+        do_linesearch: bool = False
     ):
         self.m = m
         self.j = j
@@ -54,6 +55,7 @@ class ParticleDescent:
         self.f = f
         self.grad_f = grad_f
         self.hess_f = hess_f
+        self.do_linesearch = do_linesearch
 
     def parameterize(self, r: np.ndarray, theta: np.ndarray) -> np.ndarray:
         matrix = np.zeros((len(r), 1 + self.Omega.shape[0]))
@@ -152,17 +154,19 @@ class ParticleDescent:
         post = 0
         ut = 0
 
-        for iter in range(max_iters):
+        for it in range(max_iters):
             t = time.time()
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
             p_def += time.time() - t
+
             t = time.time()
             inner = c * np.ones(self.constant_dim)
             if len(u.coefficients):
                 inner += self.kernel(u.support).T @ u.coefficients
             inner = self.grad_f(inner)
             innr += time.time() - t
+
             t = time.time()
             r_update = (
                 -2 * self.a_parameter * (-self.kernel_sign * p_u(theta) + self.alpha)
@@ -178,23 +182,49 @@ class ParticleDescent:
                 self.b_parameter * self.kernel_sign * np.array(grad_p_u(theta)).T
             ).T
             update += time.time() - t
-            t = time.time()
-            r, cs, theta = self.retraction(
-                r, r_update, cs, cs_update, theta, theta_update, mode="mirror"
-            )
-            retr += time.time() - t
-            t = time.time()
-            keep_indices = np.logical_and(theta[:, 0] > 1e-6, np.abs(r) > 1e-7)
-            r = r[keep_indices]
-            self.kernel_sign = self.kernel_sign[keep_indices]
-            theta = theta[keep_indices]
-            c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
-            post += time.time() - t
-            t = time.time()
-            u = Measure(matrix=self.parameterize(r, theta))
-            ut += time.time() - t
+
+            r_old, cs_old, theta_old = r, cs, theta
+            decrease = 1.
+            while decrease > 0:
+                t = time.time()
+                r, cs, theta = self.retraction(
+                    r_old, r_update, cs_old, cs_update, theta_old, theta_update, mode="mirror"
+                )
+                retr += time.time() - t
+
+                t = time.time()
+                keep_indices = np.logical_and(theta[:, 0] > 1e-6, np.abs(r) > 1e-7)
+                r = r[keep_indices]
+                self.kernel_sign = self.kernel_sign[keep_indices]
+                theta = theta[keep_indices]
+                c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
+                post += time.time() - t
+
+                t = time.time()
+                u = Measure(matrix=self.parameterize(r, theta))
+                ut += time.time() - t
+
+                obj = self.j(u, c)
+
+                if self.do_linesearch:
+                    decrease = obj - objective_values[-1]
+                    ls_fact = 1.
+                    #print(f"{it}: {decrease}, {self.b_parameter}, {self.a_parameter}")
+                    if decrease > 0:
+                        r_update = r_update / (1 + ls_fact)
+                        cs_update = cs_update / (1 + ls_fact)
+                        theta_update = theta_update / (1 + ls_fact)
+                        self.a_parameter = self.a_parameter / (1 + ls_fact)
+                        self.b_parameter = self.b_parameter / (1 + ls_fact)
+                    else:
+                        self.a_parameter = self.a_parameter * (1 + 0.5 * ls_fact)
+                        self.b_parameter = self.b_parameter * (1 + 0.5 * ls_fact)
+                else:
+                    # just accept the step, and do not check for descent
+                    decrease = -1.
+                
             times.append(time.time() - t_0)
-            obj = self.j(u, c)
+            
             objective_values.append(obj)
             supports.append(len(u.coefficients))
             if np.isnan(obj) or np.isinf(obj):
@@ -212,18 +242,18 @@ class ParticleDescent:
             ):
                 logging.info(f"Divergence: {obj}, {np.max(objective_values[-101:-1])}")
                 return u, c, objective_values, supports, times, False
-            if (iter + 1) % 1000 == 0:
 
-                # logging.info(obj - np.max(objective_values[-101:-1]))
-                # logging.info(np.max(np.abs(obj - np.array(objective_values[-101:]))))
-                # logging.info(
-                #     f"r_delta: {np.linalg.norm(r_update):.3E}, theta_delta: {np.linalg.norm(theta_update):.3E}, c_update: {np.linalg.norm(cs_update):.3E}"
-                # )
-                # logging.info(
-                #     f"p: {p_def:.3E}, inner: {innr:.3E}, update: {update:.3E}, retr: {retr:.3E}, post: {post:.3E}, ut: {ut:.3E}"
-                # )
+            if (it + 1) % 1000 == 0:
+                logging.info(obj - np.max(objective_values[-101:-1]))
+                #logging.info(np.max(np.abs(obj - np.array(objective_values[-101:]))))
                 logging.info(
-                    f"{iter + 1}: supp: {len(u.coefficients)}, c value: {c:.3E}, objective {obj:.14E}"
+                    f"r_delta: {np.linalg.norm(r_update):.3E}, theta_delta: {np.linalg.norm(theta_update):.3E}, c_update: {np.linalg.norm(cs_update):.3E}"
+                )
+                logging.info(
+                    f"p: {p_def:.3E}, inner: {innr:.3E}, update: {update:.3E}, retr: {retr:.3E}, post: {post:.3E}, ut: {ut:.3E}"
+                )
+                logging.info(
+                    f"{it + 1}: supp: {len(u.coefficients)}, c value: {c:.3E}, objective {obj:.14E}"
                 )
                 p_def = 0
                 innr = 0
