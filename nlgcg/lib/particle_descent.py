@@ -193,10 +193,6 @@ class ParticleDescent:
                 retr += time.time() - t
 
                 t = time.time()
-                keep_indices = np.logical_and(theta[:, 0] > 1e-6, np.abs(r) > 1e-7)
-                r = r[keep_indices]
-                self.kernel_sign = self.kernel_sign[keep_indices]
-                theta = theta[keep_indices]
                 c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
                 post += time.time() - t
 
@@ -222,6 +218,17 @@ class ParticleDescent:
                 else:
                     # just accept the step, and do not check for descent
                     decrease = -1.
+
+            t = time.time()
+            keep_indices = np.logical_and(theta[:, 0] > 1e-6, np.abs(r) > 1e-7)
+            r = r[keep_indices]
+            theta = theta[keep_indices]
+            self.kernel_sign = self.kernel_sign[keep_indices]
+            post += time.time() - t
+
+            t = time.time()
+            u = Measure(matrix=self.parameterize(r, theta))
+            ut += time.time() - t
                 
             times.append(time.time() - t_0)
             
