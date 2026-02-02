@@ -354,7 +354,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     particle_supports = []
     for i in range(Nrun):
         print(f"Running Particle descent (trial {i})")
-        max_iter = int(1e4) #int(1e6)
+        max_iter = int(5000) #int(1e6)
         u, c, objective_values_particle, supports_particle, times_particle, success = exp_particle.solve(max_iters=max_iter, mode="uniform")
         local_residuals = adapt_time(times_particle, [obj - optimum for obj in objective_values_particle], frame=1000, resolution=1)
         particle_residuals.append(local_residuals)

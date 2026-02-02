@@ -185,7 +185,7 @@ class ParticleDescent:
 
             r_old, cs_old, theta_old = r, cs, theta
             decrease = 1.
-            while decrease > 0:
+            while decrease >= 1e-10:
                 t = time.time()
                 r, cs, theta = self.retraction(
                     r_old, r_update, cs_old, cs_update, theta_old, theta_update, mode="mirror"
@@ -206,7 +206,7 @@ class ParticleDescent:
                     decrease = obj - objective_values[-1]
                     ls_fact = 1.
                     #print(f"{it}: {decrease}, {self.b_parameter}, {self.a_parameter}")
-                    if decrease > 0:
+                    if decrease >= 1e-10:
                         r_update = r_update / (1 + ls_fact)
                         cs_update = cs_update / (1 + ls_fact)
                         theta_update = theta_update / (1 + ls_fact)
