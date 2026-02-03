@@ -211,7 +211,7 @@ def create_particle_matrix():
         ssn_steps=100,
         do_linesearch=True
     )
-    u, c, objective_values, supports, times, success = exp.solve(max_iters=int(1e6), mode="uniform")
+    u, c, objective_values, supports, times, success = exp.solve(max_iters=int(1e6), max_time=5*60, mode="uniform")
 
     print(f"found optimimum with value {objective_values[-1]} (difference to ref {optimum} is {objective_values[-1] - optimum})")
 
@@ -342,6 +342,8 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
         local_residuals = adapt_time(times_nlgcg, [obj - optimum for obj in objective_values_nlgcg], frame=1000, resolution=1)
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
+        print(f"Stochastic NLCG converged up to residual {objective_values_nlgcg[-1] - optimum}")
+
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_residuals_std = np.std(bring_to_same_length(nlgcg_residuals), axis=0)
@@ -354,11 +356,12 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     particle_supports = []
     for i in range(Nrun):
         print(f"Running Particle descent (trial {i})")
-        max_iter = int(5000) #int(1e6)
+        max_iter = int(1e4) #int(1e6)
         u, c, objective_values_particle, supports_particle, times_particle, success = exp_particle.solve(max_iters=max_iter, mode="uniform")
         local_residuals = adapt_time(times_particle, [obj - optimum for obj in objective_values_particle], frame=1000, resolution=1)
         particle_residuals.append(local_residuals)
         particle_supports.append(supports_particle)
+        print(f"Particle descent converged up to residual {objective_values_particle[-1] - optimum}")
 
     particle_residuals_filtered = []
     converged_frac = 0
