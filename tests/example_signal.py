@@ -240,7 +240,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
         hess_j_N=hess_j_N,
         alpha=alpha,
         Omega=Omega,
-        global_search_resolution=10,
+        global_search_resolution=100,
         dual_variable_goodness=0.3,
         constant_dim=len(target),
         kernel_dim=len(target),
@@ -291,16 +291,22 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
         to_return = []
         last_pos = 0
         last_res = residuals[0]
-        for t in range(frame):
+        for t in range(int(frame/resolution)):
+            minimim_time = t*resolution
+            maximum_time = (t+1)*resolution
+            added = False
             for i, (res, tim) in enumerate(zip(residuals[last_pos:], times[last_pos:])):
-                if tim > t+resolution:
-                    to_return.append(last_res)
-                    if tim  - t - resolution < resolution:
-                        last_pos += i
-                    break
-                else:
+                if tim < maximum_time and tim >= minimim_time:
+                    to_return.append(res)
                     last_res = res
-                    to_return.append(last_res)
+                    last_pos += i + 1
+                    added = True
+                    break
+            if not added:
+                to_return.append(last_res)
+            if t*resolution >= times[-1]:
+                break
+        to_return.append(residuals[-1])
         return to_return
 
     def bring_to_same_length(arrays):
@@ -316,19 +322,20 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
 
     logging.getLogger().setLevel(logging.CRITICAL) # Supress logging
 
+    resolution = 0.1 # time resolution for the plots (seconds)
 
     # deterministic NLCG
     print(f"Running deterministic NLCG")
     u, c, times_det_nlgcg, supports_det_nlgcg, inner_loop, lgcg_lazy, lgcg_total, objective_values_det_nlgcg, dropped_tot, epsilons = exp_nlgcg.solve(
         tol=5e-14, max_radius=max_radius, temperature=0.1, mode="deterministic")
-    residuals_det_nlgcg = adapt_time(times_det_nlgcg, [obj - optimum for obj in objective_values_det_nlgcg], frame=1000, resolution=1)
+    residuals_det_nlgcg = adapt_time(times_det_nlgcg, [obj - optimum for obj in objective_values_det_nlgcg], frame=1000, resolution=resolution)
 
     print(f"NLCG converged up to residual {objective_values_det_nlgcg[-1] - optimum}")
 
     # Adaptive refinement
     print(f"Running adaptive refinement")
     cells_dict, vertices_dict, vertices, u, objective_values_adaptive, times_adaptive, actives, supports_adaptive = exp_adaptive.solve(max_iters=200)
-    residuals_adaptive = adapt_time(times_adaptive, [obj - optimum for obj in objective_values_adaptive], frame=1000, resolution=1)
+    residuals_adaptive = adapt_time(times_adaptive, [obj - optimum for obj in objective_values_adaptive], frame=1000, resolution=resolution)
 
     print(f"Adaptive refinement converged up to residual {objective_values_adaptive[-1] - optimum}")
 
@@ -339,7 +346,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
         print(f"Running stochastic NLCG (trial {i})")
         u, c, times_nlgcg, supports_nlgcg, inner_loop, lgcg_lazy, lgcg_total, objective_values_nlgcg, dropped_tot, epsilons = exp_nlgcg.solve(
             tol=5e-14, max_radius=max_radius, temperature=0.1)
-        local_residuals = adapt_time(times_nlgcg, [obj - optimum for obj in objective_values_nlgcg], frame=1000, resolution=1)
+        local_residuals = adapt_time(times_nlgcg, [obj - optimum for obj in objective_values_nlgcg], frame=1000, resolution=resolution)
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
         print(f"Stochastic NLCG converged up to residual {objective_values_nlgcg[-1] - optimum}")
@@ -358,7 +365,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
         print(f"Running Particle descent (trial {i})")
         max_iter = int(1e4) #int(1e6)
         u, c, objective_values_particle, supports_particle, times_particle, success = exp_particle.solve(max_iters=max_iter, mode="uniform")
-        local_residuals = adapt_time(times_particle, [obj - optimum for obj in objective_values_particle], frame=1000, resolution=1)
+        local_residuals = adapt_time(times_particle, [obj - optimum for obj in objective_values_particle], frame=1000, resolution=resolution)
         particle_residuals.append(local_residuals)
         particle_supports.append(supports_particle)
         print(f"Particle descent converged up to residual {objective_values_particle[-1] - optimum}")
@@ -387,15 +394,15 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     names = ["NLGCG", "Adaptive Refinement", "SNLGCG", "Particle Descent"]
     styles = ["-", "-.", "--", ":"]
     for array, name, style in zip([residuals_det_nlgcg, residuals_adaptive, nlgcg_residuals_mean, particle_residuals_mean], names, styles):
-        ax.semilogy(np.arange(len(array)), array, style, label=name);
+        ax.semilogy(resolution * np.arange(len(array)), array, style, label=name);
 
-    ax.fill(np.hstack((np.arange(len(particle_residuals_mean)),
-                       np.arange(len(particle_residuals_mean))[::-1])),
+    ax.fill(np.hstack((resolution * np.arange(len(particle_residuals_mean)),
+                       resolution * np.arange(len(particle_residuals_mean))[::-1])),
             np.hstack((np.array(particle_residuals_mean) - np.array(particle_residuals_std),
                        np.array(particle_residuals_mean)[::-1] + np.array(particle_residuals_std)[::-1])),
             'red', alpha=0.3);
-    ax.fill(np.hstack((np.arange(len(nlgcg_residuals_mean)),
-                       np.arange(len(nlgcg_residuals_mean))[::-1])),
+    ax.fill(np.hstack((resolution * np.arange(len(nlgcg_residuals_mean)),
+                       resolution * np.arange(len(nlgcg_residuals_mean))[::-1])),
             np.hstack((np.array(nlgcg_residuals_mean) - np.array(nlgcg_residuals_std),
                        np.array(nlgcg_residuals_mean)[::-1] + np.array(nlgcg_residuals_std)[::-1])),
             'green', alpha=0.3);
