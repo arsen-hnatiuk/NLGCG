@@ -35,7 +35,9 @@ class ParticleDescent:
         grad_f: Callable,
         hess_f: Callable,
         ssn_steps: int = 100,
-        do_linesearch: bool = False
+        do_linesearch: bool = True,
+        do_pruning: bool = False,
+        residual_tolerance: float = 5e-14
     ):
         self.m = m
         self.j = j
@@ -44,7 +46,7 @@ class ParticleDescent:
         self.Omega = Omega
         self.a_parameter = a_parameter
         self.b_parameter = b_parameter
-        self.machine_precision = 5e-14
+        self.residual_tolerance = residual_tolerance
         self.kernel = kernel
         self.constant_dim = constant_dim
         self.kernel_dim = kernel_dim
@@ -56,8 +58,9 @@ class ParticleDescent:
         self.grad_f = grad_f
         self.hess_f = hess_f
         self.do_linesearch = do_linesearch
+        self.do_pruning = do_pruning
 
-    def parameterize(self, r: np.ndarray, theta: np.ndarray, Nparticle=None) -> np.ndarray:
+    def parameterize(self, r: np.ndarray, theta: np.ndarray, Nparticle = None) -> np.ndarray:
         if Nparticle is None:
             Nparticle = len(r)
         matrix = np.zeros((len(r), 1 + self.Omega.shape[0]))
@@ -147,8 +150,11 @@ class ParticleDescent:
 
         # Fix the initial number of particles for the parametrization
         Nparticle = len(r)
-        parameterize = lambda r, theta: self.parameterize(r, theta, Nparticle=Nparticle)
 
+        def parameterize(r, theta):
+            return self.parameterize(r, theta, Nparticle=Nparticle)
+
+        # Initialize
         u = Measure(matrix=parameterize(r, theta))
         c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
         logging.info(f"0: objective {self.j(u, c):.14E}")
@@ -196,7 +202,7 @@ class ParticleDescent:
 
             r_old, cs_old, theta_old = r, cs, theta
             decrease = 1.
-            decrease_tol = 1e-10
+            decrease_tol = 0. #1e-10
             while decrease >= decrease_tol:
                 t = time.perf_counter()
                 r, cs, theta = self.retraction(
@@ -231,14 +237,14 @@ class ParticleDescent:
                         if decrease < 0.:
                             self.a_parameter = self.a_parameter * (1 + 0.5 * ls_fact)
                             self.b_parameter = self.b_parameter * (1 + 0.5 * ls_fact)
+
                 else:
                     # just accept the step, and do not check for descent
                     decrease = -1.
 
             keep_indices = np.logical_and(theta[:, 0] > 1e-6, np.abs(r) > 1e-6)
-            #TODO: Measure does this pruning in a different way. Some indices are puned in it already, and r may not be updated anymore?
 
-            if not np.all(keep_indices):
+            if self.do_pruning and not np.all(keep_indices):
                 t = time.perf_counter()
                 dropped_ind = np.logical_not(keep_indices)
                 r_drop = r[dropped_ind]
@@ -255,17 +261,16 @@ class ParticleDescent:
                 ut += time.perf_counter() - t
 
                 logging.info(f"dropped indices {np.where(dropped_ind)[0]} with r={r_drop} and theta={theta_drop}, function change {obj - old_obj}")
-                
+
             times.append(time.perf_counter() - t_0)
-            
+
             objective_values.append(obj)
             supports.append(len(u.coefficients))
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
                 return u, c, objective_values, supports, times, False
             elif (
-                np.max(np.abs(obj - np.array(objective_values[-101:])))
-                < self.machine_precision
+                np.max(np.abs(obj - np.array(objective_values[-101:]))) < self.residual_tolerance
             ):
                 logging.info("Convergence")
                 return u, c, objective_values, supports, times, True
@@ -279,7 +284,7 @@ class ParticleDescent:
 
             if (it + 1) % 1000 == 0:
                 logging.info(obj - np.max(objective_values[-101:-1]))
-                #logging.info(np.max(np.abs(obj - np.array(objective_values[-101:]))))
+                # logging.info(np.max(np.abs(obj - np.array(objective_values[-101:]))))
                 logging.info(
                     f"r_delta: {np.linalg.norm(r_update):.3E}, theta_delta: {np.linalg.norm(theta_update):.3E}, c_update: {np.linalg.norm(cs_update):.3E}"
                 )
@@ -287,7 +292,7 @@ class ParticleDescent:
                     f"p: {p_def:.3E}, inner: {innr:.3E}, update: {update:.3E}, retr: {retr:.3E}, post: {post:.3E}, ut: {ut:.3E}"
                 )
                 logging.info(
-                    f"{it + 1}: supp: {len(u.coefficients)}, c value: {c:.3E}, objective {obj:.14E}"
+                    f"{it + 1}: supp: {keep_indices.sum()}, c value: {c:.3E}, objective {obj:.14E}"
                 )
                 p_def = 0
                 innr = 0

@@ -77,12 +77,13 @@ hess_f = jax.jit(jax.hessian(f))
 _ = grad_f(jnp.zeros(target.shape[0]))
 _ = hess_f(jnp.zeros(target.shape[0]))
 
-j = lambda u, c: f(u.duality_pairing(kernel)+c*np.ones(target.shape)) + g(u.coefficients)
+def j(u: np.ndarray, c: float):
+    return f(u.duality_pairing(kernel) + c*np.ones(target.shape)) + g(u.coefficients)
 
 @jax.jit
 def p_raw(parameters: np.ndarray, c: float, omega: np.ndarray):
-    coefficients = parameters[:,0]
-    support = parameters[:,1:]
+    coefficients = parameters[:, 0]
+    support = parameters[:, 1:]
     Ku = jnp.tensordot(kernel(support), coefficients, axes=([0], [0]))
     constant_term = c*jnp.ones(len(target))
     return singleton_kernel(omega) @ -grad_f(Ku+constant_term)
@@ -143,10 +144,10 @@ grad_j_N_non_reg = jax.jit(jax.grad(j_N_, argnums=1))
 hess_j_N_non_reg = jax.jit(jax.hessian(j_N_, argnums=1))
 
 
-
 optimum = 0.21975385192787872
 
 # Experiments
+
 
 def create_particle_matrix():
 
@@ -187,38 +188,51 @@ def create_particle_matrix():
     print(f"dropped: {dropped_tot}")
     print(f"solution {u}")
 
-    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger().setLevel(logging.WARN)
 
-    # Particle Gradient Descent
-    a_parameter = 0.001
-    exp = ParticleDescent(
-        m=200,
-        j=j,
-        p=p,
-        grad_p=grad_p,
-        Omega=Omega,
-        a_parameter=a_parameter,
-        b_parameter=a_parameter/2,
-        kernel=kernel,
-        constant_dim=len(target),
-        kernel_dim=len(target),
-        alpha=alpha,
-        target=target,
-        g=g,
-        f=f,
-        grad_f=grad_f,
-        hess_f=hess_f,
-        ssn_steps=100,
-        do_linesearch=True
-    )
-    u, c, objective_values, supports, times, success = exp.solve(max_iters=int(1e6), max_time=5*60, mode="uniform")
+    runs_per_Nparticle = {12: 50, 24: 50, 50: 20, 100: 10, 200: 5}
+    success_per_Nparticle = {key: 0 for key in runs_per_Nparticle.keys()}
 
-    print(f"found optimimum with value {objective_values[-1]} (difference to ref {optimum} is {objective_values[-1] - optimum})")
+    for Nparticle, Nruns in runs_per_Nparticle.items():
+        # Particle Gradient Descent (a_parameter does not matter so much because of linesearch)
+        print(f"running trials with {Nparticle} particles")
+        a_parameter = 0.0001
+        b_parameter_factor = 0.1
+        b_parameter = b_parameter_factor * a_parameter
+        exp = ParticleDescent(
+            m=Nparticle,
+            j=j,
+            p=p,
+            grad_p=grad_p,
+            Omega=Omega,
+            a_parameter=a_parameter,
+            b_parameter=b_parameter,
+            kernel=kernel,
+            constant_dim=len(target),
+            kernel_dim=len(target),
+            alpha=alpha,
+            target=target,
+            g=g,
+            f=f,
+            grad_f=grad_f,
+            hess_f=hess_f,
+            do_linesearch=True,
+            residual_tolerance=1e-5
+        )
 
-    print(u.to_matrix()[np.abs(u.coefficients) > 1e-3, :])
+        # run Nruns to determine success probability
+        for it in range(Nruns):
+            u, c, objective_values, supports, times, success = exp.solve(max_iters=int(1e6), max_time=5*60, mode="uniform")
 
+            print(f"\t({it+1} of {Nruns}): found optimum with value {objective_values[-1]} (residual {objective_values[-1] - optimum})")
+            # print(u.to_matrix()[np.abs(u.coefficients) > 1e-3, :])
+
+            success_per_Nparticle[Nparticle] += int(objective_values[-1] - optimum < 1e-3)
+
+        print({Npart: success_per_Nparticle[Npart] / Nrun for Npart, Nrun in runs_per_Nparticle.items()})
 
 def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_example")):
+
     exp_nlgcg = NLGCG(
         target=target,
         kernel=kernel,
@@ -265,7 +279,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
         grad_f=grad_f,
         hess_f=hess_f,
         ssn_steps=100,
-        do_linesearch=True
+        residual_tolerance=1e-12
     )
 
     exp_adaptive = AdaptiveRefinement(
@@ -319,21 +333,22 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
             new_arrays.append(arr)
         return new_arrays
 
+    logging.getLogger().setLevel(logging.CRITICAL)
+    # Supress logging
 
-    logging.getLogger().setLevel(logging.CRITICAL) # Supress logging
-
-    resolution = 0.1 # time resolution for the plots (seconds)
+    resolution = 0.1
+    # time resolution for the plots (seconds)
 
     # deterministic NLCG
-    print(f"Running deterministic NLCG")
-    u, c, times_det_nlgcg, supports_det_nlgcg, inner_loop, lgcg_lazy, lgcg_total, objective_values_det_nlgcg, dropped_tot, epsilons = exp_nlgcg.solve(
+    print("Running deterministic NLCG")
+    u_opt, c_opt, times_det_nlgcg, supports_det_nlgcg, inner_loop, lgcg_lazy, lgcg_total, objective_values_det_nlgcg, dropped_tot, epsilons = exp_nlgcg.solve(
         tol=5e-14, max_radius=max_radius, temperature=0.1, mode="deterministic")
     residuals_det_nlgcg = adapt_time(times_det_nlgcg, [obj - optimum for obj in objective_values_det_nlgcg], frame=1000, resolution=resolution)
 
     print(f"NLCG converged up to residual {objective_values_det_nlgcg[-1] - optimum}")
 
     # Adaptive refinement
-    print(f"Running adaptive refinement")
+    print("Running adaptive refinement")
     cells_dict, vertices_dict, vertices, u, objective_values_adaptive, times_adaptive, actives, supports_adaptive = exp_adaptive.solve(max_iters=200)
     residuals_adaptive = adapt_time(times_adaptive, [obj - optimum for obj in objective_values_adaptive], frame=1000, resolution=resolution)
 
@@ -351,19 +366,17 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
         nlgcg_supports.append(supports_nlgcg)
         print(f"Stochastic NLCG converged up to residual {objective_values_nlgcg[-1] - optimum}")
 
-
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_residuals_std = np.std(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
     nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
-
 
     # Particle Descent Stochastic
     particle_residuals = []
     particle_supports = []
     for i in range(Nrun):
         print(f"Running Particle descent (trial {i})")
-        max_iter = int(1e4) #int(1e6)
+        max_iter = int(1e5)
         u, c, objective_values_particle, supports_particle, times_particle, success = exp_particle.solve(max_iters=max_iter, mode="uniform")
         local_residuals = adapt_time(times_particle, [obj - optimum for obj in objective_values_particle], frame=1000, resolution=resolution)
         particle_residuals.append(local_residuals)
@@ -373,7 +386,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     particle_residuals_filtered = []
     converged_frac = 0
     for i in range(len(particle_residuals)):
-        if particle_residuals[i][-1] < 1e-8:
+        if particle_residuals[i][-1] < 1e-7:
             particle_residuals_filtered.append(particle_residuals[i])
             converged_frac += 1/Nrun
 
@@ -388,9 +401,8 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
     print(f"Particle descent converged in {converged_frac*100}% of cases.")
 
-
     # Plot residuals
-    fig, ax = plt.subplots(figsize=(12,10))
+    fig, ax = plt.subplots(figsize=(12, 10))
     names = ["NLGCG", "Adaptive Refinement", "SNLGCG", "Particle Descent"]
     styles = ["-", "-.", "--", ":"]
     for array, name, style in zip([residuals_det_nlgcg, residuals_adaptive, nlgcg_residuals_mean, particle_residuals_mean], names, styles):
@@ -416,7 +428,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     plt.close()
 
     # Plot supports
-    fig, ax = plt.subplots(figsize=(12,10))
+    fig, ax = plt.subplots(figsize=(12, 10))
     names = ["NLGCG", "Adaptive Refinement", "SNLGCG", "Particle Descent"]
     styles = ["-", "-.", "--", ":"]
     for array, name, style in zip([supports_det_nlgcg, supports_adaptive, nlgcg_supports_mean, particle_supports_mean], names, styles):
@@ -431,7 +443,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
                        np.arange(len(nlgcg_supports_mean))[::-1])),
             np.hstack((np.array(nlgcg_supports_mean)-np.array(nlgcg_supports_std),
                        np.array(nlgcg_supports_mean)[::-1]+np.array(nlgcg_supports_std)[::-1])),
-            'green', alpha=0.3);
+            'green', alpha=0.3)
     plt.ylabel("Support points")
     plt.xlabel("Iterations")
     # plt.ylim(1e-12, 100)
@@ -440,9 +452,8 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     plt.savefig(results_dir / "support_size.pdf")
     plt.close()
 
-
     # Plot number of coefficients to otimize
-    fig, ax = plt.subplots(figsize=(12,10))
+    fig, ax = plt.subplots(figsize=(12, 10))
     names = ["NLGCG", "Adaptive Refinement", "SNLGCG"]
     styles = ["-", "-.", "--"]
     for array, name, style in zip([supports_det_nlgcg, actives, nlgcg_supports_mean], names, styles):
@@ -452,37 +463,35 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
                        np.arange(len(nlgcg_supports_mean))[::-1])),
             np.hstack((np.array(nlgcg_supports_mean)-np.array(nlgcg_supports_std),
                        np.array(nlgcg_supports_mean)[::-1]+np.array(nlgcg_supports_std)[::-1])),
-            'green', alpha=0.3);
-    plt.ylabel("Number of coefficients to optimize");
-    plt.xlabel("Iterations");
+            'green', alpha=0.3)
+    plt.ylabel("Number of coefficients to optimize")
+    plt.xlabel("Iterations")
     # plt.ylim(1e-12, 100);
     # plt.xlim(0, 100);
-    ax.legend();
+    ax.legend()
     plt.savefig(results_dir / "support_size_2.pdf")
     plt.close()
 
-
     # Plots
     a = np.arange(Omega[0][0], Omega[0][1], 0.001)
-    p_u = p(u, c)
+    p_u = p(u_opt, c_opt)
     vals = p_u(a)
-    plt.plot(a,vals);
-    plt.axvline(x=-1, linestyle="-", c="r", label="Support");
-    plt.axvline(x=-1, linestyle="-", c="g", label="Truth");
-    for i, pos in enumerate(u.support):
-        ymax = 0.5+(u.coefficients[i]*alpha*0.25+0.05*np.sign(u.coefficients[i]))
-        plt.axvline(x=pos, ymin=0.5,ymax=ymax, linestyle="-", c="r");
-    for point, weight in  zip(true_sources, true_weights):
-        ymax = 0.5+(weight*alpha*0.25+0.05*np.sign(weight))
-        plt.axvline(x=point, ymin=0.5,ymax=ymax,alpha=0.5, linestyle="-", c="g");
+    plt.plot(a, vals)
+    plt.axvline(x=-1, linestyle="-", c="r", label="Support")
+    plt.axvline(x=-1, linestyle="-", c="g", label="Truth")
+    for i, pos in enumerate(u_opt.support):
+        ymax = 0.5 + (u_opt.coefficients[i]*alpha*0.25 + 0.05*np.sign(u_opt.coefficients[i]))
+        plt.axvline(x=pos, ymin=0.5, ymax=ymax, linestyle="-", c="r")
+    for point, weight in zip(true_sources, true_weights):
+        ymax = 0.5 + (weight*alpha*0.25 + 0.05*np.sign(weight))
+        plt.axvline(x=point, ymin=0.5, ymax=ymax, alpha=0.5, linestyle="-", c="g")
 
-    plt.xlabel("Frequency");
-    plt.ylim(-alpha*1.1,alpha*1.1);
-    plt.xlim(0, 50);
-    plt.legend();
+    plt.xlabel("Frequency")
+    plt.ylim(-alpha*1.1, alpha*1.1)
+    plt.xlim(0, 50)
+    plt.legend()
     plt.savefig(results_dir / "sources.pdf")
     plt.close()
-
 
     # Plot the measured signal
     def signal(x, sources, weights, c):
@@ -492,34 +501,34 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
             weighted_signal += weight*np.sin(2*np.pi*point*x).flatten()
         return weighted_signal
 
-    a = np.arange(0,1,0.001)
+    a = np.arange(0, 1, 0.001)
     true_signal = signal(a, true_sources, true_weights, 0.)
-    plt.plot(a, true_signal);
-    plt.xlabel("Time");
+    plt.plot(a, true_signal)
+    plt.xlabel("Time")
     plt.savefig(results_dir / "signal.pdf")
+    plt.close()
 
     a = np.arange(0, 1, 0.001)
-    predicted_signal = signal(a, u.support, u.coefficients, c)
+    predicted_signal = signal(a, u_opt.support, u_opt.coefficients, c_opt)
     error = true_signal - predicted_signal
     print(f"L2 error: {np.linalg.norm(error)/np.sqrt(len(a))}, Linf error: {np.max(np.abs(error))}")
-    plt.plot(a, np.abs(true_signal-predicted_signal));
-    plt.xlabel("Time");
+    plt.plot(a, np.abs(true_signal-predicted_signal))
+    plt.xlabel("Time")
     plt.savefig(results_dir / "signal_error.pdf")
     plt.close()
 
-
     # Plot residuals
-    residuals = np.array(objective_values_det_nlgcg) - optimum
-    plt.figure(figsize=(12,5))
-    plt.semilogy(np.array(range(len(residuals)-1)), residuals[:-1], linestyle="-.", color="green");
-    # for interval in intervals:
-    #     plt.fill_between(interval, 0, 60, hatch="/", color="gray", alpha=0.2);
-    plt.ylim(1e-17, 60);
-    # plt.xlim(2500, 3000);
-    plt.ylabel("Objective residual");
-    plt.xlabel("Total iterations");
-    plt.savefig(results_dir / "residulas.pdf")
-    plt.close()
+    #residuals = np.array(objective_values_det_nlgcg) - optimum
+    #plt.figure(figsize=(12,5))
+    #plt.semilogy(np.array(range(len(residuals)-1)), residuals[:-1], linestyle="-.", color="green");
+    ## for interval in intervals:
+    ##     plt.fill_between(interval, 0, 60, hatch="/", color="gray", alpha=0.2);
+    #plt.ylim(1e-17, 60);
+    ## plt.xlim(2500, 3000);
+    #plt.ylabel("Objective residual");
+    #plt.xlabel("Total iterations");
+    #plt.savefig(results_dir / "residulas.pdf")
+    #plt.close()
 
 
 if __name__ == '__main__':
