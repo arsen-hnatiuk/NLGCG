@@ -2,8 +2,6 @@
 # coding: utf-8
 
 import numpy as np
-import scipy as sp
-from typing import Callable, Union
 import os
 os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0"
 import jax
@@ -49,7 +47,7 @@ observations = np.arange(0, 1, 1/observation_resolution)
 
 @jax.jit
 def singleton_kernel(omega: float):
-    return jnp.sin(2*np.pi*omega*observations)
+    return jnp.sin(2*jnp.pi*omega*observations)
 
 grad_kernel = jax.jit(jax.jacobian(singleton_kernel))
 hess_kernel = jax.jit(jax.hessian(singleton_kernel))
@@ -77,8 +75,17 @@ hess_f = jax.jit(jax.hessian(f))
 _ = grad_f(jnp.zeros(target.shape[0]))
 _ = hess_f(jnp.zeros(target.shape[0]))
 
-def j(u: np.ndarray, c: float):
-    return f(u.duality_pairing(kernel) + c*np.ones(target.shape)) + g(u.coefficients)
+@jax.jit
+def _j(coefficients, support, c):
+    if support.shape[0] > 0:
+        values = kernel(support)
+        y = values.T @ coefficients
+    else:
+        y = 0
+    return f(y + c*jnp.ones(target.shape)) + g(coefficients)
+
+def j(u: Measure, c: float):
+    return _j(u.coefficients, u.support, c)
 
 @jax.jit
 def p_raw(parameters: np.ndarray, c: float, omega: np.ndarray):
@@ -188,15 +195,16 @@ def create_particle_matrix():
     print(f"dropped: {dropped_tot}")
     print(f"solution {u}")
 
-    logging.getLogger().setLevel(logging.WARN)
+    #logging.getLogger().setLevel(logging.WARN)
 
-    runs_per_Nparticle = {12: 50, 24: 50, 50: 20, 100: 10, 200: 5}
+    #runs_per_Nparticle = {12: 50, 24: 50, 50: 20, 100: 10, 200: 5}
+    runs_per_Nparticle = {3: 1}
     success_per_Nparticle = {key: 0 for key in runs_per_Nparticle.keys()}
 
     for Nparticle, Nruns in runs_per_Nparticle.items():
         # Particle Gradient Descent (a_parameter does not matter so much because of linesearch)
         print(f"running trials with {Nparticle} particles")
-        a_parameter = 0.0001
+        a_parameter = 0.0000001
         b_parameter_factor = 0.1
         b_parameter = b_parameter_factor * a_parameter
         exp = ParticleDescent(
@@ -217,7 +225,7 @@ def create_particle_matrix():
             grad_f=grad_f,
             hess_f=hess_f,
             do_linesearch=True,
-            residual_tolerance=1e-5
+            residual_tolerance=1e-16
         )
 
         # run Nruns to determine success probability
@@ -227,9 +235,16 @@ def create_particle_matrix():
             print(f"\t({it+1} of {Nruns}): found optimum with value {objective_values[-1]} (residual {objective_values[-1] - optimum})")
             # print(u.to_matrix()[np.abs(u.coefficients) > 1e-3, :])
 
-            success_per_Nparticle[Nparticle] += int(objective_values[-1] - optimum < 1e-3)
+            success = objective_values[-1] - optimum < 1e-3
+            success_per_Nparticle[Nparticle] += int(success)
+
+            if success:
+                plt.semilogy(np.arange(len(objective_values)), np.array(objective_values) - optimum)
+                plt.show()
+                plt.close()
 
         print({Npart: success_per_Nparticle[Npart] / Nrun for Npart, Nrun in runs_per_Nparticle.items()})
+
 
 def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_example")):
 
@@ -333,7 +348,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
             new_arrays.append(arr)
         return new_arrays
 
-    logging.getLogger().setLevel(logging.CRITICAL)
+    logging.getLogger().setLevel(logging.WARN)
     # Supress logging
 
     resolution = 0.1
@@ -386,7 +401,7 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     particle_residuals_filtered = []
     converged_frac = 0
     for i in range(len(particle_residuals)):
-        if particle_residuals[i][-1] < 1e-7:
+        if particle_residuals[i][-1] < 1e-5:
             particle_residuals_filtered.append(particle_residuals[i])
             converged_frac += 1/Nrun
 
@@ -452,12 +467,12 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
     plt.savefig(results_dir / "support_size.pdf")
     plt.close()
 
-    # Plot number of coefficients to otimize
+    # Plot number of coefficients to optimize
     fig, ax = plt.subplots(figsize=(12, 10))
     names = ["NLGCG", "Adaptive Refinement", "SNLGCG"]
     styles = ["-", "-.", "--"]
     for array, name, style in zip([supports_det_nlgcg, actives, nlgcg_supports_mean], names, styles):
-        ax.semilogx(np.arange(len(array)), array, style, label=name);
+        ax.semilogx(np.arange(len(array)), array, style, label=name)
 
     ax.fill(np.hstack((np.arange(len(nlgcg_supports_mean)),
                        np.arange(len(nlgcg_supports_mean))[::-1])),

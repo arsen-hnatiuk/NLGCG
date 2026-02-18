@@ -60,7 +60,7 @@ class ParticleDescent:
         self.do_linesearch = do_linesearch
         self.do_pruning = do_pruning
 
-    def parameterize(self, r: np.ndarray, theta: np.ndarray, Nparticle = None) -> np.ndarray:
+    def parameterize(self, r: np.ndarray, theta: np.ndarray, Nparticle: int = None) -> np.ndarray:
         if Nparticle is None:
             Nparticle = len(r)
         matrix = np.zeros((len(r), 1 + self.Omega.shape[0]))
@@ -103,7 +103,7 @@ class ParticleDescent:
         # ]
         # theta = np.array(np.meshgrid(*(grids_1d))).reshape(len(self.Omega), -1).T
         theta = np.vstack((grid_pos, grid_neg))  # Positive and negative support
-        cs = np.array([-1, 1])
+        cs = np.array([1, -1])
         self.kernel_sign = np.sign(r)
         r = np.abs(r)
         return r, theta, cs
@@ -119,11 +119,11 @@ class ParticleDescent:
         mode: str = "canonical",
     ) -> tuple:
         if mode == "canonical":
-            r_retraction = r + del_r
-            c_retraction = c + del_c
+            r_retraction = r + r * del_r
+            c_retraction = c + c * del_c
             theta_retraction = theta + del_theta
         elif mode == "mirror":
-            r_retraction = r * np.exp(del_r)  # /r
+            r_retraction = r * np.exp(del_r)
             c_retraction = c * np.exp(del_c)
             theta_retraction = theta + del_theta
 
@@ -150,13 +150,14 @@ class ParticleDescent:
 
         # Fix the initial number of particles for the parametrization
         Nparticle = len(r)
+        # print(f'{Nparticle=}')
 
         def parameterize(r, theta):
             return self.parameterize(r, theta, Nparticle=Nparticle)
 
         # Initialize
         u = Measure(matrix=parameterize(r, theta))
-        c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
+        c = np.sum(np.sign(cs) * cs ** 2) / Nparticle
         logging.info(f"0: objective {self.j(u, c):.14E}")
         objective_values = [self.j(u, c)]
         times = [time.perf_counter() - t_0]
@@ -169,7 +170,7 @@ class ParticleDescent:
         post = 0
         ut = 0
 
-        a_parameter0 = self.a_parameter
+        min_a_parameter = self.a_parameter
 
         for it in range(max_iters):
             t = time.perf_counter()
@@ -181,29 +182,28 @@ class ParticleDescent:
             inner = c * np.ones(self.constant_dim)
             if len(u.coefficients):
                 inner += self.kernel(u.support).T @ u.coefficients
-            inner = self.grad_f(inner)
+            inner = - self.grad_f(inner)
             innr += time.perf_counter() - t
 
             t = time.perf_counter()
+
+            #mask = self.a_parameter > min_a_parameter * 1.1
             r_update = (
-                -2 * self.a_parameter * (-self.kernel_sign * p_u(theta) + self.alpha)
+                self.a_parameter * 2. * (self.kernel_sign * p_u(theta) + self.alpha)
             )
             inner_sum = np.sum(inner)
-            cs_update = np.array(
-                [
-                    (self.a_parameter) * inner_sum,
-                    -(self.a_parameter) * inner_sum,
-                ]
+            cs_update = (
+                self.a_parameter * 2. * np.sign(cs) * inner_sum
             )
             theta_update = (
                 self.b_parameter * self.kernel_sign * np.array(grad_p_u(theta)).T
             ).T
             update += time.perf_counter() - t
 
-            r_old, cs_old, theta_old = r, cs, theta
+            r_old, cs_old, theta_old = r.copy(), cs.copy(), theta.copy()
             decrease = 1.
-            decrease_tol = 0. #1e-10
-            while decrease >= decrease_tol:
+            decrease_tol = 0.
+            while decrease > decrease_tol:
                 t = time.perf_counter()
                 r, cs, theta = self.retraction(
                     r_old, r_update, cs_old, cs_update, theta_old, theta_update, mode="mirror"
@@ -211,7 +211,7 @@ class ParticleDescent:
                 retr += time.perf_counter() - t
 
                 t = time.perf_counter()
-                c = (np.sign(cs[0]) * cs[0] ** 2 + np.sign(cs[1]) * cs[1] ** 2) / len(r)
+                c = np.sum(np.sign(cs) * cs ** 2) / Nparticle
                 post += time.perf_counter() - t
 
                 t = time.perf_counter()
@@ -219,24 +219,37 @@ class ParticleDescent:
                 obj = self.j(u, c)
                 ut += time.perf_counter() - t
 
-                if self.do_linesearch and self.a_parameter > a_parameter0 / 10:
-                    model = objective_values[-1]
+                if self.do_linesearch:
+                    r_grad = (1 / Nparticle) * (r_old * r_update) / self.a_parameter
+                    cs_grad = (1 / Nparticle) * (cs_old * cs_update) / self.a_parameter
+                    theta_grad = (1 / Nparticle) * (theta_update * r_old[:, None]**2) / self.b_parameter
+                    pred = r_grad.dot(r - r_old) + cs_grad.dot(cs - cs_old) + (
+                        theta_grad.reshape(-1).dot((theta - theta_old).reshape(-1)))
+
+                    #TODO: bug, this linesearch does not terminate always
+                    pred_factor = .9
+                    model = objective_values[-1] - pred_factor * pred
+                    print(f"{it}, {self.a_parameter:1.2e}: red={objective_values[-1] - obj:1.3e} pred={pred:1.3e}")
+
                     decrease = obj - model
                     ls_fact = 1.
-                    if self.a_parameter < 1e-6:
-                        logging.warn(f"iteration {it}: descent is {decrease}, the step-sizes ({self.a_parameter}, {self.b_parameter}) are very small!")
-                        #breakpoint()
-
                     if decrease >= decrease_tol:
-                        r_update = r_update / (1 + ls_fact)
-                        cs_update = cs_update / (1 + ls_fact)
-                        theta_update = theta_update / (1 + ls_fact)
-                        self.a_parameter = self.a_parameter / (1 + ls_fact)
-                        self.b_parameter = self.b_parameter / (1 + ls_fact)
+                        contraction = max(self.a_parameter / (1 + ls_fact), min_a_parameter) / self.a_parameter
+                        self.a_parameter = self.a_parameter * contraction
+                        self.b_parameter = self.b_parameter * contraction
+                        r_update = r_update * contraction
+                        cs_update = cs_update * contraction
+                        theta_update = theta_update * contraction
+
+                        if contraction >= .99:
+                            # exit line-search and accept step
+                            logging.warn(f"line-search failed in iteration {it}: descent is {decrease}, red={objective_values[-1] - obj:1.3e}, pred={pred:1.3e}, ")
+                            #breakpoint()
+                            decrease = 0
                     else:
                         if decrease < 0.:
-                            self.a_parameter = self.a_parameter * (1 + 0.5 * ls_fact)
-                            self.b_parameter = self.b_parameter * (1 + 0.5 * ls_fact)
+                            self.a_parameter = self.a_parameter * (1 + 0.25 * ls_fact)
+                            self.b_parameter = self.b_parameter * (1 + 0.25 * ls_fact)
 
                 else:
                     # just accept the step, and do not check for descent
@@ -265,7 +278,7 @@ class ParticleDescent:
             times.append(time.perf_counter() - t_0)
 
             objective_values.append(obj)
-            supports.append(len(u.coefficients))
+            supports.append(keep_indices.sum())
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
                 return u, c, objective_values, supports, times, False

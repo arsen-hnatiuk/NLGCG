@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Callable, Union
-
+import jax.numpy as jnp
 
 class Measure:
     # An implementation of a class that represents finitely supported measures on Omega
@@ -17,7 +17,9 @@ class Measure:
             coefficients = matrix[:, 0]
             support = matrix[:, 1:]
         self.support = np.array(support)
-        self.coefficients = np.array(coefficients)
+        self.coefficients = np.asarray(coefficients)
+        # TODO: why are the above arrays numpy instead of jax?
+
         # support, index, inverse_index, frequencies = np.unique(
         #     np.array(support),
         #     axis=0,
@@ -64,6 +66,10 @@ class Measure:
             result = np.tensordot(values, self.coefficients, axes=([0], [0]))
         return result
 
+#    def duality_pairing_jax(self, fct: Callable):
+#        values = fct(self.support.copy())
+#        values.reshape(values.shape[0], -1).T @ self.coefficients.reshape(values.shape[0], -1)
+
     def copy(self) -> "Measure":
         # Return a copy of the measure
         return Measure(
@@ -107,3 +113,18 @@ class Measure:
 
     def __str__(self) -> str:
         return f"Measure with support\n{self.support}\nand coefficients\n{self.coefficients}"
+
+    def _tree_flatten(self):
+        children = (self.support, self.coefficients)  # arrays / dynamic values
+        aux_data = {}  # static values
+        return (children, aux_data)
+
+    @classmethod
+    def _tree_unflatten(cls, aux_data, children):
+        return cls(*children, **aux_data)
+
+
+from jax import tree_util
+tree_util.register_pytree_node(Measure,
+                               Measure._tree_flatten,
+                               Measure._tree_unflatten)
