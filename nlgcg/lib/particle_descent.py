@@ -34,7 +34,6 @@ class ParticleDescent:
         f: Callable,
         grad_f: Callable,
         hess_f: Callable,
-        ssn_steps: int = 100,
         do_linesearch: bool = True,
         do_pruning: bool = False,
         residual_tolerance: float = 5e-14,
@@ -50,7 +49,6 @@ class ParticleDescent:
         self.kernel = kernel
         self.constant_dim = constant_dim
         self.kernel_dim = kernel_dim
-        self.ssn_steps = ssn_steps
         self.alpha = alpha
         self.target = target
         self.g = g
@@ -177,7 +175,9 @@ class ParticleDescent:
             inner = -self.grad_f(inner)
             inner_sum = np.sum(inner)
 
-            inner_r_update = self.kernel_sign * p_u(theta) + self.alpha
+            inner_r_update = (
+                self.kernel_sign * p_u(theta) - self.alpha
+            )  # <-- There was an error in sign of alpha
             inner_cs_update = np.sign(cs) * inner_sum
             inner_theta_update = (self.kernel_sign * np.array(grad_p_u(theta)).T).T
 
@@ -186,18 +186,21 @@ class ParticleDescent:
             cs_update = self.a_parameter * 2.0 * inner_cs_update
             theta_update = self.b_parameter * inner_theta_update
 
-            # Descent, predicted by the gradient
-            r_pred = 2 * (r * r_update) @ (r * inner_r_update)
-            cs_pred = 2 * (cs * cs_update) @ (cs * inner_cs_update)
+            # Descent, predicted by the gradient: armijo step size
+            r_pred = 4 * (r * inner_r_update) @ (r * inner_r_update)
+            cs_pred = 4 * (cs * inner_cs_update) @ (cs * inner_cs_update)
             theta_pred = np.sum(
                 [
-                    r_local**2 * theta_update_local @ inner_theta_update_local
-                    for r_local, theta_update_local, inner_theta_update_local in zip(
-                        r, theta_update, inner_theta_update
-                    )
+                    r_local**2 * inner_theta_update_local @ inner_theta_update_local
+                    for r_local, inner_theta_update_local in zip(r, inner_theta_update)
                 ]
             )
-            pred = (r_pred + cs_pred + theta_pred) / Nparticle
+            pred_raw = (r_pred + cs_pred + theta_pred) / Nparticle
+            pred = (
+                self.a_parameter * r_pred
+                + self.a_parameter * cs_pred
+                + self.b_parameter * theta_pred
+            ) / Nparticle
 
             r_old, cs_old, theta_old = r.copy(), cs.copy(), theta.copy()
             decrease = 1.0
@@ -218,6 +221,7 @@ class ParticleDescent:
                 obj = self.j(u, c)
 
                 if self.do_linesearch:
+                    # # Konstantin's version
                     # r_grad = (1 / Nparticle) * (r_old * r_update) / self.a_parameter
                     # cs_grad = (1 / Nparticle) * (cs_old * cs_update) / self.a_parameter
                     # theta_grad = (
@@ -231,12 +235,11 @@ class ParticleDescent:
                     #     + (theta_grad.reshape(-1).dot((theta - theta_old).reshape(-1)))
                     # )
 
-                    # TODO: bug, this linesearch does not terminate always
                     pred_factor = 0.9
                     model = objective_values[-1] - pred_factor * pred
-                    logging.info(
-                        f"{it}, {self.a_parameter:1.2e}: red={objective_values[-1] - obj:1.3e} pred={pred:1.3e}"
-                    )
+                    # logging.info(
+                    #     f"{it}, {self.a_parameter:1.2e}: red={objective_values[-1] - obj:1.3e} pred={pred:1.3e}"
+                    # )
 
                     decrease = obj - model
                     ls_fact = 1.0
@@ -285,6 +288,7 @@ class ParticleDescent:
                 logging.info(
                     f"dropped indices {np.where(dropped_ind)[0]} with r={r_drop} and theta={theta_drop}, function change {obj - old_obj}"
                 )
+            Nparticle = len(r)
 
             times.append(time.perf_counter() - t_0)
 
@@ -293,6 +297,9 @@ class ParticleDescent:
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
                 return u, c, objective_values, supports, times, False
+            elif pred_raw < 1e-9:
+                logging.info(f"Convergence, gradient: {pred_raw:1.3e}")
+                return u, c, objective_values, supports, times, True
             elif (
                 np.max(np.abs(obj - np.array(objective_values[-101:])))
                 < self.residual_tolerance
@@ -308,12 +315,12 @@ class ParticleDescent:
                 return u, c, objective_values, supports, times, False
 
             if (it + 1) % 1000 == 0:
-                logging.info(obj - np.max(objective_values[-101:-1]))
+                # logging.info(obj - np.max(objective_values[-101:-1]))
+                # logging.info(
+                #     f"r_delta: {np.linalg.norm(r_update):.3E}, theta_delta: {np.linalg.norm(theta_update):.3E}, c_update: {np.linalg.norm(cs_update):.3E}"
+                # )
                 logging.info(
-                    f"r_delta: {np.linalg.norm(r_update):.3E}, theta_delta: {np.linalg.norm(theta_update):.3E}, c_update: {np.linalg.norm(cs_update):.3E}"
-                )
-                logging.info(
-                    f"{it + 1}: supp: {keep_indices.sum()}, c value: {c:.3E}, objective {obj:.14E}"
+                    f"{it + 1}: supp: {keep_indices.sum()}, c value: {c:.3E}, a value: {self.a_parameter:.3E}, objective {obj:.14E}"
                 )
             if time.perf_counter() - t_0 > max_time:
                 logging.info("Max time reached")
