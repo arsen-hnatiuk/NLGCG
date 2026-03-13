@@ -9,7 +9,7 @@ from itertools import product
 from typing import Callable, Union
 from sklearn.utils import gen_batches
 
-from ..lib.measure import Measure
+from lib.measure import Measure
 
 logging.basicConfig(
     level=logging.DEBUG,

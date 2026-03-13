@@ -7,8 +7,8 @@ import os
 
 import jax
 import time
-from ..lib.measure import Measure
-from ..lib.ssn import SSN
+from lib.measure import Measure
+from lib.ssn import SSN
 
 logging.basicConfig(
     level=logging.DEBUG,

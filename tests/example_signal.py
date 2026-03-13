@@ -22,13 +22,18 @@ import sys
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-sys.path.insert(0, ".")  # TODO: not necessary if there is a local install
+module_path = Path(__file__).resolve().parent.parent
+if module_path not in sys.path:
+    sys.path.append(str(module_path))
+src_path = (module_path / "src").resolve()
+if src_path not in sys.path:
+    sys.path.append(str(src_path))
 
-from nlgcg.nlgcg import NLGCG
-from nlgcg.lib.measure import Measure
-from nlgcg.lib.ssn import SSN
-from nlgcg.lib.particle_descent import ParticleDescent
-from nlgcg.lib.adaptive_refinement import AdaptiveRefinement
+from nlgcg import NLGCG
+from src.lib.measure import Measure
+from src.lib.ssn import SSN
+from src.lib.particle_descent import ParticleDescent
+from src.lib.adaptive_refinement import AdaptiveRefinement
 
 
 # Signal Processing
