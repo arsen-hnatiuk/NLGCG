@@ -169,11 +169,16 @@ class ParticleDescent:
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
 
-            inner = c * np.ones(self.constant_dim)
+            inner = c * np.hstack(
+                (
+                    np.ones(self.constant_dim),
+                    np.zeros(self.kernel_dim - self.constant_dim),
+                )
+            )
             if len(u.coefficients):
                 inner += self.kernel(u.support).T @ u.coefficients
             inner = -self.grad_f(inner)
-            inner_sum = np.sum(inner)
+            inner_sum = np.sum(inner[: self.constant_dim])
 
             inner_r_update = (
                 self.kernel_sign * p_u(theta) - self.alpha
