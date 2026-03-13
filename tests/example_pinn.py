@@ -29,36 +29,65 @@ if src_path not in sys.path:
 
 from nlgcg import NLGCG
 from src.lib.particle_descent import ParticleDescent
-from src.lib.adaptive_refinement import AdaptiveRefinement
 
 logging.getLogger().setLevel(logging.INFO)
 
 # Generate Data and Define Functions
 
-sigma_space = np.array([0, 2])
+sigma_space = np.array([0, 1])
 omega_space = np.array([[-1, 1], [-1, 1]])
 Omega = np.vstack((sigma_space, omega_space))
 d = omega_space.shape[0]
-variance_exponent = 0.1
-alpha = 1e-3
+variance_exponent = 2.01
+alpha = 1e-2
+lambda_ = 1000
 observation_resolution = 20
-endpoint = False
-max_radius = 1e-2
 
-true_function = lambda x: np.minimum(1 - np.abs(x[:, 0]), 1 - np.abs(x[:, 1]))
+
+@jax.jit
+def true_function(x: np.ndarray):
+    return (
+        jnp.tanh(
+            4
+            * (
+                0.3
+                - jnp.linalg.norm(
+                    x - np.array([0.300000000000000001, 0.3000000000000001])
+                )
+            )
+        )
+        + jnp.tanh(
+            12
+            * (
+                0.15
+                - jnp.linalg.norm(x + np.array([0.300000000000001, 0.3000000000000001]))
+            )
+        )
+        + 2
+    )
+
+
+grad_true_function = jax.jit(jax.grad(true_function))
+hess_true_function = jax.jit(jax.hessian(true_function))
+true_function = jax.vmap(true_function)
+grad_true_function = jax.vmap(grad_true_function)
+hess_true_function = jax.vmap(hess_true_function)
+
+int_function = true_function
+grad_int_function = grad_true_function
+hess_int_function = hess_true_function
+laplacian_int_function = lambda omega: jnp.trace(
+    hess_int_function(omega), axis1=1, axis2=2
+)
+bound_function = true_function
 
 max_radius = (Omega[0][1] - Omega[0][0]) / 100
 
-observations = (
+observations_raw = (
     np.array(
         np.meshgrid(
             *(
-                np.linspace(
-                    bound[0] + 1e-5,
-                    bound[1] - np.sqrt(3) * 1e-5,
-                    observation_resolution,
-                    endpoint=endpoint,
-                )
+                np.linspace(bound[0], bound[1], observation_resolution, endpoint=True)
                 for bound in omega_space
             )
         )
@@ -66,42 +95,98 @@ observations = (
     .reshape(len(omega_space), -1)
     .T
 )
+int_observations = np.array(
+    [
+        obs
+        for obs in observations_raw
+        if all(obs != omega_space[0][0]) and all(obs != omega_space[0][1])
+    ]
+)
+bound_observations = np.array(
+    [
+        obs
+        for obs in observations_raw
+        if any(obs == omega_space[0][0]) or any(obs == omega_space[0][1])
+    ]
+)
+
+int_target = int_function(int_observations) ** 3 - laplacian_int_function(
+    int_observations
+)
+bound_target = np.sqrt(lambda_) * bound_function(bound_observations)
+target = np.hstack((int_target, bound_target))
+observations = np.vstack((int_observations, bound_observations))
+
+constant_dim = len(target)
+kernel_dim = len(target) + len(int_target)
+
+
+@jax.jit
+def adjusted_sigmoid(x):
+    return 2 * jnp.exp(2 * x) / (1 + jnp.exp(2 * x)) - 1
+
+
+@jax.jit
+def raw_kernel(omega: np.ndarray, x: np.ndarray):
+    # Both inputs 1D
+    sigma = omega[0]
+    x_omega = omega[1:]
+    variance_factor = adjusted_sigmoid(sigma**variance_exponent)
+    inner = -(jnp.sum((x_omega - x) ** 2)) / (2 * sigma**2)
+    outer = (jnp.exp(inner) * variance_factor) / (np.sqrt(2 * np.pi) ** d)
+    return outer
+
+
+hess_raw_kernel = jax.jit(jax.hessian(raw_kernel, argnums=1))
+raw_kernel = jax.vmap(raw_kernel, (None, 0), 0)
+hess_raw_kernel = jax.vmap(hess_raw_kernel, (None, 0), 0)
 
 
 @jax.jit
 def singleton_kernel(omega: np.ndarray):
-    sigma = omega[0]
-    x = omega[1:]
-    inner = -jnp.sum((x - observations) ** 2, axis=1) / (2 * sigma**2)
-    outer = (jnp.exp(inner) * sigma ** (variance_exponent)) / (
-        jnp.sqrt(2 * jnp.pi) ** d
+    # function, laplacian
+    return jnp.hstack(
+        [
+            raw_kernel(omega, observations),
+            jnp.trace(hess_raw_kernel(omega, int_observations), axis1=1, axis2=2),
+        ]
     )
-    return outer
 
+
+grad_kernel = jax.jit(jax.jacobian(singleton_kernel))
+hess_kernel = jax.jit(jax.hessian(singleton_kernel))
+_ = grad_kernel(np.ones(len(Omega)))
+_ = hess_kernel(np.ones(len(Omega)))
 
 kernel = jax.vmap(singleton_kernel)
+grad_kernel = jax.vmap(grad_kernel)
+hess_kernel = jax.vmap(hess_kernel)
 
-target = true_function(observations)
+g = jax.jit(lambda w: alpha * jnp.linalg.norm(w, ord=1))
+grad_g = jax.jit(jax.grad(g))
+_ = grad_g(jnp.ones(1))
 
 
 @jax.jit
-def g(w: np.ndarray) -> float:
-    return alpha * jnp.linalg.norm(w, ord=1)
+def r(function_and_laplacian: np.ndarray) -> np.ndarray:
+    u = function_and_laplacian[: len(target)]  # shape (len(target),)
+    laplacian = function_and_laplacian[len(target) :]  # shape (len(int_target),)
+    to_return = jnp.hstack(
+        (u[: len(int_target)] ** 3 - laplacian, np.sqrt(lambda_) * u[len(int_target) :])
+    )
+    return to_return
 
 
-@jax.jit
-def f(y: np.ndarray) -> float:
-    return 0.5 * jnp.sum((y - target) ** 2)
-
-
+f = jax.jit(lambda y: 0.5 * jnp.sum((r(y) - target) ** 2) * 4 / len(target))
 grad_f = jax.jit(jax.grad(f))
 hess_f = jax.jit(jax.hessian(f))
-_ = grad_f(jnp.zeros(target.shape[0]))
-_ = hess_f(jnp.zeros(target.shape[0]))
+_ = grad_f(jnp.ones(2 * len(int_target) + len(bound_target)))
+_ = hess_f(jnp.ones(2 * len(int_target) + len(bound_target)))
 
-j = lambda u, c: f(u.duality_pairing(kernel) + c * np.ones(target.shape)) + g(
-    u.coefficients
-)
+j = lambda u, c: f(
+    u.duality_pairing(kernel, kernel_dim)
+    + np.hstack((c * np.ones(constant_dim), np.zeros(kernel_dim - constant_dim)))
+) + g(u.coefficients)
 
 
 @jax.jit
@@ -109,7 +194,9 @@ def p_raw(parameters: np.ndarray, c: float, omega: np.ndarray):
     coefficients = parameters[:, 0]
     support = parameters[:, 1:]
     Ku = jnp.tensordot(kernel(support), coefficients, axes=([0], [0]))
-    constant_term = c * jnp.ones(len(target))
+    constant_term = jnp.hstack(
+        (c * jnp.ones(constant_dim), jnp.zeros(kernel_dim - constant_dim))
+    )
     return singleton_kernel(omega) @ -grad_f(Ku + constant_term)
 
 
@@ -132,7 +219,11 @@ def f_N(raw_input: np.ndarray) -> float:
     input = raw_input[:-1].reshape(-1, d + 2)
     weights = input[:, 0]
     omega = input[:, 1:]
-    return f(kernel(omega).T @ weights + constant * jnp.ones(target.shape))
+    return f(
+        kernel(omega).T @ weights
+        + constant
+        * jnp.hstack((jnp.ones(constant_dim), jnp.zeros(kernel_dim - constant_dim)))
+    )
 
 
 @jax.jit
@@ -143,7 +234,9 @@ def j_N(raw_input: np.ndarray) -> float:
 
 
 grad_f_N = jax.jit(jax.grad(f_N))
+hess_f_N = jax.jit(jax.hessian(f_N))
 grad_j_N = jax.jit(jax.grad(j_N))
+hess_j_N = jax.jit(jax.hessian(j_N))
 
 
 # Define functions where the derivatives are taken wrt regularized (weights) and non-regularized(support + constant) parameters
@@ -156,7 +249,7 @@ def f_N_(weights: np.ndarray, support_constant: np.ndarray) -> float:
 
 grad_f_N_non_reg = jax.jit(jax.grad(f_N_, argnums=1))
 
-optimum = 0.03394931259295045
+optimum = 26.6427140338004
 
 
 def create_plots(Nrun: int = 10):
@@ -181,9 +274,9 @@ def create_plots(Nrun: int = 10):
         Omega=Omega,
         global_search_resolution=5,
         dual_variable_goodness=0.3,
-        constant_dim=len(target),
-        kernel_dim=len(target),
-        newton_tolerance=2e-2,
+        constant_dim=constant_dim,
+        kernel_dim=kernel_dim,
+        newton_tolerance=1e-1,
     )
 
     exp_particle = ParticleDescent(
@@ -192,11 +285,11 @@ def create_plots(Nrun: int = 10):
         p=p,
         grad_p=grad_p,
         Omega=Omega,
-        a_parameter=0.001,
-        b_parameter=0.001 / 2,
+        a_parameter=0.01,
+        b_parameter=0.01 / 10,
         kernel=kernel,
-        constant_dim=len(target),
-        kernel_dim=len(target),
+        constant_dim=constant_dim,
+        kernel_dim=kernel_dim,
         alpha=alpha,
         target=target,
         g=g,
@@ -204,25 +297,6 @@ def create_plots(Nrun: int = 10):
         grad_f=grad_f,
         hess_f=hess_f,
         residual_tolerance=5e-14,
-    )
-
-    exp_adaptive = AdaptiveRefinement(
-        observations=observations,
-        j=j,
-        p=p,
-        grad_p=grad_p,
-        hess_p=hess_p,
-        Omega=Omega,
-        kernel=kernel,
-        constant_dim=len(target),
-        kernel_dim=len(target),
-        alpha=alpha,
-        target=target,
-        g=g,
-        f=f,
-        grad_f=grad_f,
-        hess_f=hess_f,
-        ssn_steps=1000,
     )
 
     def adapt_time(times, residuals, frame=100, resolution=1):
@@ -287,25 +361,6 @@ def create_plots(Nrun: int = 10):
         resolution=resolution,
     )
 
-    # Adaptive refinement
-    logging.info("Running adaptive refinement")
-    (
-        cells_dict,
-        vertices_dict,
-        vertices,
-        u,
-        objective_values_adaptive,
-        times_adaptive,
-        actives,
-        supports_adaptive,
-    ) = exp_adaptive.solve(max_iters=50, do_logging=False)
-    residuals_adaptive = adapt_time(
-        times_adaptive,
-        [obj - optimum for obj in objective_values_adaptive],
-        frame=frame_size,
-        resolution=resolution,
-    )
-
     # NLGCG stochastic
     nlgcg_residuals = []
     nlgcg_supports = []
@@ -344,7 +399,7 @@ def create_plots(Nrun: int = 10):
     particle_supports = []
     for i in range(Nrun):
         logging.info(f"Running Particle descent (trial {i})")
-        max_iter = int(1e4)
+        max_iter = int(1e5)
         u, c, objective_values_particle, supports_particle, times_particle, success = (
             exp_particle.solve(max_iters=max_iter, mode="exponential", do_logging=False)
         )
@@ -387,19 +442,17 @@ def create_plots(Nrun: int = 10):
 
     # Plot residuals
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "Adaptive Refinement", "RNLGCG", "Particle Descent"]
-    styles = ["-", "-.", "--", ":"]
-    for array, name, style in zip(
-        [
-            residuals_det_nlgcg,
-            residuals_adaptive,
-            nlgcg_residuals_mean,
-            particle_residuals_mean,
-        ],
+    names = ["NLGCG", "RNLGCG", "Particle Descent"]
+    styles = ["-", "--", ":"]
+    colors = ["b", "g", "r"]
+    for array, name, style, color in zip(
+        [residuals_det_nlgcg, nlgcg_residuals_mean, particle_residuals_mean, colors],
         names,
         styles,
     ):
-        ax.semilogy(resolution * np.arange(len(array)), array, style, label=name)
+        ax.semilogy(
+            resolution * np.arange(len(array)), array, style, label=name, color=color
+        )
 
     ax.fill(
         np.hstack(
@@ -446,19 +499,19 @@ def create_plots(Nrun: int = 10):
 
     # Plot supports
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "Adaptive Refinement", "RNLGCG", "Particle Descent"]
+    names = ["NLGCG", "RNLGCG", "Particle Descent"]
     styles = ["-", "-.", "--", ":"]
-    for array, name, style in zip(
+    for array, name, style, color in zip(
         [
             supports_det_nlgcg,
-            supports_adaptive,
             nlgcg_supports_mean,
             particle_supports_mean,
         ],
         names,
         styles,
+        colors,
     ):
-        ax.semilogx(np.arange(len(array)), array, style, label=name)
+        ax.semilogx(np.arange(len(array)), array, style, label=name, color=color)
 
     ax.fill(
         np.hstack(
@@ -500,40 +553,6 @@ def create_plots(Nrun: int = 10):
     # plt.xlim(0, 100)
     ax.legend()
     plt.savefig(results_dir / "support_size.png", bbox_inches="tight")
-    plt.close()
-
-    # Plot number of coefficients to optimize
-    fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "Adaptive Refinement", "RNLGCG"]
-    styles = ["-", "-.", "--"]
-    for array, name, style in zip(
-        [supports_det_nlgcg, actives, nlgcg_supports_mean], names, styles
-    ):
-        ax.semilogx(np.arange(len(array)), array, style, label=name)
-
-    ax.fill(
-        np.hstack(
-            (
-                np.arange(len(nlgcg_supports_mean)),
-                np.arange(len(nlgcg_supports_mean))[::-1],
-            )
-        ),
-        np.hstack(
-            (
-                np.array(nlgcg_supports_mean) - np.array(nlgcg_supports_std),
-                np.array(nlgcg_supports_mean)[::-1]
-                + np.array(nlgcg_supports_std)[::-1],
-            )
-        ),
-        "green",
-        alpha=0.3,
-    )
-    plt.ylabel("Number of coefficients to optimize")
-    plt.xlabel("Iterations")
-    # plt.ylim(1e-12, 100);
-    # plt.xlim(0, 100);
-    ax.legend()
-    plt.savefig(results_dir / "support_size_2.png", bbox_inches="tight")
     plt.close()
 
     # Plot the function with reconstruction error
@@ -599,7 +618,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--results-dir",
         type=str,
-        default="results/function_approximation",
+        default="results/pinn",
         help="Directory for plots",
     )
 

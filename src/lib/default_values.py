@@ -1,5 +1,10 @@
 import numpy as np
 from typing import Callable
+import jax
+import jax.numpy as jnp
+
+jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
 
 
 def get_default_f(K: np.ndarray, y: np.ndarray) -> Callable:

@@ -6,8 +6,12 @@ import logging
 from itertools import product
 from typing import Callable
 from sklearn.utils import gen_batches
-
 from lib.measure import Measure
+import jax
+import jax.numpy as jnp
+
+jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
 
 logging.basicConfig(
     level=logging.DEBUG,

@@ -1,6 +1,11 @@
 import numpy as np
 import logging
 from lib.default_values import *
+import jax
+import jax.numpy as jnp
+
+jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
 
 logging.basicConfig(
     level=logging.DEBUG,

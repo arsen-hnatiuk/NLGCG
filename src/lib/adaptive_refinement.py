@@ -1,6 +1,8 @@
 # The Adaptive Refinement algorithm, as presented in https://arxiv.org/pdf/2301.07555
 
 import numpy as np
+import jax
+import jax.numpy as jnp
 from typing import Callable
 import logging
 import time
@@ -8,6 +10,9 @@ import cvxpy as cp
 from itertools import product
 from lib.measure import Measure
 from lib.ssn import SSN
+
+jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -355,7 +360,7 @@ class AdaptiveRefinement:
             # Determine iterate measure
             actives.append(len(active_set))
             active_set, coefs, c = self.finite_dimensional_step(
-                active_set, coefs, c, q, do_logging
+                active_set, coefs, c, q, do_logging=do_logging
             )
             q = np.array(
                 self.grad_f(
@@ -379,7 +384,7 @@ class AdaptiveRefinement:
             running_time += time.perf_counter() - inner_t - inactive_time
 
         logging.info(
-            f"NLGCG exited after {times[-1]:.3E} seconds with sparsity {len(u.support)} to objective value {objective_values[-1]:.14E}"
+            f"Adaptive refinement exited after {times[-1]:.3E} seconds with sparsity {len(u.support)} to objective value {objective_values[-1]:.14E}"
         )
 
         return (

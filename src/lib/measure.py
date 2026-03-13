@@ -1,6 +1,11 @@
 import numpy as np
 from typing import Callable, Union
+import jax
 import jax.numpy as jnp
+
+jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
+
 
 class Measure:
     # An implementation of a class that represents finitely supported measures on Omega
@@ -19,22 +24,6 @@ class Measure:
         self.support = np.array(support)
         self.coefficients = np.asarray(coefficients)
         # TODO: why are the above arrays numpy instead of jax?
-
-        # support, index, inverse_index, frequencies = np.unique(
-        #     np.array(support),
-        #     axis=0,
-        #     return_index=True,
-        #     return_inverse=True,
-        #     return_counts=True,
-        # )
-        # coefficients_processed = np.array(coefficients)[index].astype(float)
-        # repeat_indices = np.where(frequencies > 1)[0]
-        # for ind in repeat_indices:
-        #     repeat_positions = np.where(inverse_index == ind)[0]
-        #     coefficients_processed[ind] = np.sum(coefficients[repeat_positions])
-        # non_zero_index = np.where(coefficients_processed != 0)[0]
-        # self.support = support[non_zero_index]
-        # self.coefficients = coefficients_processed[non_zero_index]
         assert len(self.support) == len(
             self.coefficients
         ), "The support and coefficients must have the same length"
@@ -65,10 +54,6 @@ class Measure:
         else:
             result = np.tensordot(values, self.coefficients, axes=([0], [0]))
         return result
-
-#    def duality_pairing_jax(self, fct: Callable):
-#        values = fct(self.support.copy())
-#        values.reshape(values.shape[0], -1).T @ self.coefficients.reshape(values.shape[0], -1)
 
     def copy(self) -> "Measure":
         # Return a copy of the measure
@@ -125,6 +110,5 @@ class Measure:
 
 
 from jax import tree_util
-tree_util.register_pytree_node(Measure,
-                               Measure._tree_flatten,
-                               Measure._tree_unflatten)
+
+tree_util.register_pytree_node(Measure, Measure._tree_flatten, Measure._tree_unflatten)

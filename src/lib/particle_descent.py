@@ -5,6 +5,11 @@ from typing import Callable
 import logging
 import time
 from lib.measure import Measure
+import jax
+import jax.numpy as jnp
+
+jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -283,7 +288,7 @@ class ParticleDescent:
             times.append(time.perf_counter() - t_0)
 
             objective_values.append(obj)
-            supports.append(keep_indices.sum())
+            supports.append(Nparticle)
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
                 success = False

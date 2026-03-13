@@ -2,6 +2,7 @@ import numpy as np
 import logging
 import time
 import jax
+import jax.numpy as jnp
 from typing import Callable
 from lib.ssn import SSN
 from lib.newton import Newton
@@ -9,6 +10,7 @@ from lib.global_search import GlobalSearch
 from lib.measure import Measure
 
 jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
 
 logging.basicConfig(
     level=logging.DEBUG,
