@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Callable, Union
-
+import jax.numpy as jnp
 
 class Measure:
     # An implementation of a class that represents finitely supported measures on Omega
@@ -16,21 +16,25 @@ class Measure:
                 matrix = matrix.reshape(1, -1)
             coefficients = matrix[:, 0]
             support = matrix[:, 1:]
-        support, index, inverse_index, frequencies = np.unique(
-            np.array(support),
-            axis=0,
-            return_index=True,
-            return_inverse=True,
-            return_counts=True,
-        )
-        coefficients_processed = np.array(coefficients)[index].astype(float)
-        repeat_indices = np.where(frequencies > 1)[0]
-        for ind in repeat_indices:
-            repeat_positions = np.where(inverse_index == ind)[0]
-            coefficients_processed[ind] = np.sum(coefficients[repeat_positions])
-        non_zero_index = np.where(coefficients_processed != 0)[0]
-        self.support = support[non_zero_index]
-        self.coefficients = coefficients_processed[non_zero_index]
+        self.support = np.array(support)
+        self.coefficients = np.asarray(coefficients)
+        # TODO: why are the above arrays numpy instead of jax?
+
+        # support, index, inverse_index, frequencies = np.unique(
+        #     np.array(support),
+        #     axis=0,
+        #     return_index=True,
+        #     return_inverse=True,
+        #     return_counts=True,
+        # )
+        # coefficients_processed = np.array(coefficients)[index].astype(float)
+        # repeat_indices = np.where(frequencies > 1)[0]
+        # for ind in repeat_indices:
+        #     repeat_positions = np.where(inverse_index == ind)[0]
+        #     coefficients_processed[ind] = np.sum(coefficients[repeat_positions])
+        # non_zero_index = np.where(coefficients_processed != 0)[0]
+        # self.support = support[non_zero_index]
+        # self.coefficients = coefficients_processed[non_zero_index]
         assert len(self.support) == len(
             self.coefficients
         ), "The support and coefficients must have the same length"
@@ -57,12 +61,14 @@ class Measure:
         else:
             values = fct(self.support.copy())
         if len(values.shape) > 1:
-            # values = values.T
             result = np.tensordot(values, self.coefficients, axes=([0], [0]))
-            # result = result.flatten()
         else:
             result = np.tensordot(values, self.coefficients, axes=([0], [0]))
         return result
+
+#    def duality_pairing_jax(self, fct: Callable):
+#        values = fct(self.support.copy())
+#        values.reshape(values.shape[0], -1).T @ self.coefficients.reshape(values.shape[0], -1)
 
     def copy(self) -> "Measure":
         # Return a copy of the measure
@@ -107,3 +113,18 @@ class Measure:
 
     def __str__(self) -> str:
         return f"Measure with support\n{self.support}\nand coefficients\n{self.coefficients}"
+
+    def _tree_flatten(self):
+        children = (self.support, self.coefficients)  # arrays / dynamic values
+        aux_data = {}  # static values
+        return (children, aux_data)
+
+    @classmethod
+    def _tree_unflatten(cls, aux_data, children):
+        return cls(*children, **aux_data)
+
+
+from jax import tree_util
+tree_util.register_pytree_node(Measure,
+                               Measure._tree_flatten,
+                               Measure._tree_unflatten)

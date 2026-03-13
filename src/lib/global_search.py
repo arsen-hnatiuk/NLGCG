@@ -8,9 +8,8 @@ import jax
 from itertools import product
 from typing import Callable, Union
 from sklearn.utils import gen_batches
-from lib.measure import Measure
 
-jax.config.update("jax_enable_x64", True)
+from lib.measure import Measure
 
 logging.basicConfig(
     level=logging.DEBUG,

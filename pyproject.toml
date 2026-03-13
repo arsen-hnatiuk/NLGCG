@@ -2,9 +2,22 @@
 name = "NLGCG"
 version = "2025.0.0"
 requires-python = ">=3.10"
-authors = [{ name = "Arsen Hnatiuk", email = "arsen.hnatiuk@hu-berlin.de" }]
+authors = [
+  { name = "Arsen Hnatiuk", email = "arsen.hnatiuk@hu-berlin.de" },
+  { name = "Konstantin Pieper", email = "konstpieper@web.de" },
+  ]
 readme = "README.md"
-dynamic = ["dependencies"]
+dependencies = [
+  "numpy",
+  "scipy",
+  "jax"
+]
 
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
+[project.optional-dependencies]
+tests = [
+  "cvxpy",
+  "matplotlib",
+]
+
+
+
