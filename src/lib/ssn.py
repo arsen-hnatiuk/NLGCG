@@ -1,5 +1,3 @@
-# An implementation of the semismooth Newton method following Section 3 of https://mediatum.ub.tum.de/doc/1241413/1241413.pdf
-
 import numpy as np
 import logging
 from lib.default_values import *
@@ -46,6 +44,7 @@ class SSN:
             self.target_norm = np.mean(np.abs(self.target))
             self.maximum_iterations = maximum_iterations
             self.regularization = regularization
+            self.machine_precision = 5e-14
             if regularization == "mixed":
                 self.g = lambda u: float(g(u[:-1]))
             else:
@@ -75,22 +74,6 @@ class SSN:
         to_maximize = np.multiply(norm_multiplier, np.abs(p) - regularization_summand)
         variable_part = max(0, np.max(to_maximize))
         return constant_part + variable_part
-
-    # def Psi_positive(self, u: np.ndarray) -> np.ndarray:
-    #     u = u.copy()
-    #     p = self.p(u)
-    #     constant_part = -np.matmul(p, u) + self.g(u)
-    #     regularization_summand = self.alpha * np.ones(p.shape)
-    #     if self.regularization == "mixed":
-    #         constant_variable_part = p[-1]
-    #         if len(p) > 1:
-    #             variable_variable_part = np.max(p[:-1] - self.alpha)
-    #         else:
-    #             variable_variable_part = 0
-    #         variable_part = max(0, variable_variable_part, constant_variable_part)
-    #     else:
-    #         variable_part = max(0, np.max(p - regularization_summand))
-    #     return max(np.abs(constant_part), variable_part)
 
     def Psi_positive(self, u: np.ndarray) -> np.ndarray:
         # sup_v <p(u),v-u>+g(u)-g(v), adjusted for numerical stability
@@ -141,7 +124,7 @@ class SSN:
             q[-1] = self.alpha + 1  # Last element is not regularized
         return np.diag(np.where(q > self.alpha, 1, 0))
 
-    def solve(self, tol: float, u_0: np.ndarray) -> np.ndarray:
+    def solve(self, tol: float, u_0: np.ndarray, do_logging: bool) -> np.ndarray:
         # Semismooth Newton method (globalized via line search)
         if not all(self.K.shape):
             logging.debug("Empty input space, retuning u_0")
@@ -155,7 +138,7 @@ class SSN:
         k = 0
         while psi_val > tol:
             if k > self.maximum_iterations:
-                logging.info(
+                logging.warning(
                     f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {psi_val:.3E} achieved"
                 )
                 if self.j(prox_q) <= initial_j:
@@ -166,12 +149,12 @@ class SSN:
             left_hand = Id + (self.hessian(prox_q) - Id) @ self.grad_prox(q)
             theta = theta / 10
             qdiff = tol + 1
-            while qdiff >= tol:
+            while qdiff >= self.machine_precision:
                 theta = 2 * theta
                 try:
                     direction = np.linalg.solve(left_hand + theta * Id, right_hand)
                 except np.linalg.LinAlgError:
-                    logging.info(
+                    logging.warning(
                         f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {psi_val:.3E} achieved"
                     )
                     if self.j(prox_q) <= initial_j:
@@ -183,17 +166,17 @@ class SSN:
                 qdiff = self.j(prox_qnew) - self.j(prox_q)
             q = qnew
             prox_q = prox_qnew
-            self.M = float(min(self.M, self.j(prox_q) / self.alpha))
             psi_val = self.Psi(prox_q)
             k += 1
 
-        # logging.info(
-        #     f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
-        # )
-        if self.j(prox_q) <= initial_j:
-            return prox_q
-        else:
-            return u_0
+        if do_logging:
+            logging.info(
+                f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
+            )
+        if k == 0:
+            if self.j(q) < self.j(prox_q):
+                return q
+        return prox_q
 
 
 # if __name__ == "__main__":

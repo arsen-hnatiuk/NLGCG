@@ -26,26 +26,22 @@ class NLGCG:
         grad_f: Callable,
         hess_f: Callable,
         grad_f_N: Callable,
-        hess_f_N: Callable,
         grad_f_N_non_reg: Callable,  # gradient of non-regularized variables
         j: Callable,  # Objective
         j_N: Callable,  # parameterized objective
-        j_N_: Callable,  # parameterized objective split into regularized and non-regularized variables
         p: Callable,  # Dual variable
         grad_p: Callable,
         hess_p: Callable,
         grad_j_N: Callable,
-        hess_j_N: Callable,
         alpha: float,
         Omega: np.ndarray,
-        global_search_resolution: int,
+        global_search_resolution: int,  # Only for deterministic grid in global search
         constant_dim: int,
         kernel_dim: int,
         M: float = 1e6,
         C_0: float = 1,
         dual_variable_goodness: float = 0.5,
         ssn_steps: int = 100,
-        min_radius: float = 0.01,  # For Trust Region
         newton_tolerance: float = 5e-2,  # Tolerance for Newton steps in Global Search
     ) -> None:
         self.target = target
@@ -60,13 +56,11 @@ class NLGCG:
         self.grad_f = grad_f
         self.hess_f = hess_f
         self.grad_f_N = grad_f_N
-        self.hess_f_N = hess_f_N
         self.grad_f_N_non_reg = grad_f_N_non_reg
         self.Omega = Omega  # Example [[0,1],[1,2]] for [0,1]x[1,2]
         self.max_radius = 1
         self.j = j
         self.j_N = j_N
-        self.j_N_ = j_N_
         self.u_0 = Measure()
         self.c_0 = 0
         self.M_0 = float(
@@ -77,13 +71,11 @@ class NLGCG:
         self.C_raw = self.C_0  # curvature constant without the M part
         self.global_search_resolution = global_search_resolution
         self.grad_j_N = grad_j_N
-        self.hess_j_N = hess_j_N
         self.constant_dim = constant_dim
         self.kernel_dim = kernel_dim
         self.machine_precision = 5e-14
         self.dual_variable_goodness = dual_variable_goodness
         self.ssn_steps = ssn_steps
-        self.min_radius = min_radius
         self.newton_tolerance = newton_tolerance
 
     def finite_dimensional_step(
@@ -93,6 +85,7 @@ class NLGCG:
         Psi: float,
         mode: str = "unconstrained",
         optimization: str = "full",
+        do_logging: bool = True,
     ) -> tuple:
         K_support = np.hstack(
             (np.ones(self.constant_dim), np.zeros(self.kernel_dim - self.constant_dim))
@@ -126,7 +119,7 @@ class NLGCG:
             mode=mode,
             maximum_iterations=self.ssn_steps,
         )
-        ssn_solution = ssn.solve(tol=Psi, u_0=u_0)
+        ssn_solution = ssn.solve(tol=Psi, u_0=u_0, do_logging=do_logging)
         if mode == "positive":
             ssn_normal = ssn_solution * signs
             ssn_clipped = np.maximum(ssn_solution, np.zeros(len(ssn_solution))) * signs
@@ -260,6 +253,7 @@ class NLGCG:
         radii: np.ndarray,
         mode: str = "stochastic_adaptive",
         temperature: float = 1.0,
+        do_logging: bool = True,
     ) -> tuple:
         j_initial = self.j(u, c)
         condition = False
@@ -280,7 +274,7 @@ class NLGCG:
             newton_tolerance=self.newton_tolerance,
         )
         best_val, found_points, global_valid = global_search_object.solve(
-            u, c, epsilon, q_u, p_u, radius, temperature
+            u, c, epsilon, q_u, p_u, radius, temperature, do_logging
         )
         phi = self.M * max(best_val - self.alpha, 0) + q_u
         u_norm = np.linalg.norm(u.coefficients, ord=1)
@@ -344,24 +338,30 @@ class NLGCG:
         return u_plus, epsilon, global_valid, phi_numerical
 
     def newton_step(
-        self, k: int, params: np.ndarray, support: int, mode: str = "trust_region"
+        self,
+        k: int,
+        params: np.ndarray,
+        support: int,
+        mode: str = "trust_region",
+        do_logging: bool = True,
     ) -> np.ndarray:
-        logging.info(
-            f"{k} Newton: mode:{mode}, support: {support}, initial_objective: {self.j_N(params):.14E}"
-        )
+        if do_logging:
+            logging.info(
+                f"{k} Newton: mode:{mode}, support: {support}, initial_objective: {self.j_N(params):.14E}"
+            )
         newton_method = Newton(
             mode=mode,
             Omega=self.Omega,
             alpha=self.alpha,
             j_N=self.j_N,
-            j_N_=self.j_N_,
             f_N=self.f_N,
             grad_f_N=self.grad_f_N,
             grad_j_N=self.grad_j_N,
-            hess_j_N=self.hess_j_N,
             grad_f_N_non_reg=self.grad_f_N_non_reg,
         )
-        params_new = newton_method.solve(k=k, params=params, support=support)
+        params_new = newton_method.solve(
+            k=k, params=params, support=support, do_logging=do_logging
+        )
         return params_new
 
     def solve(
@@ -373,6 +373,7 @@ class NLGCG:
         mode: str = "stochastic_adaptive",
         inner_mode: str = "trust_region",
         temperature: float = 1.0,
+        do_logging: bool = True,
     ) -> tuple:
         self.max_radius = max_radius
         self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
@@ -381,8 +382,8 @@ class NLGCG:
         k = 0
         dropped = False
         dropped_tot = 0
-        initial_time = time.time()
-        times = [time.time() - initial_time]
+        initial_time = time.perf_counter()
+        times = [time.perf_counter() - initial_time]
         supports = [0]
         inner_loop = [0]
         objective_values = [self.j(u_0, c_0)]
@@ -396,7 +397,7 @@ class NLGCG:
         while phi_numerical > tol:
             global_valid = "N/A"
 
-            t = time.time()
+            t = time.perf_counter()
             if len(u_plus.coefficients):
                 u_drop, dropped = self.drop_step(u_plus, c_plus)
                 dropped_tot += dropped
@@ -408,17 +409,18 @@ class NLGCG:
                 self.machine_precision,
                 mode="positive",
                 optimization="full",
+                do_logging=do_logging,
             )
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
-            ssn_1_time = time.time() - t
+            ssn_1_time = time.perf_counter() - t
 
-            t = time.time()
+            t = time.perf_counter()
             parameters, u_ks, radii = self.local_merging_update_radii(u_coef, c_coef)
             c_ks = c_coef
             u_lm, c_lm = u_ks.copy(), c_ks
-            radii_time = time.time() - t
+            radii_time = time.perf_counter() - t
 
-            t = time.time()
+            t = time.perf_counter()
             full_parameters = np.hstack((parameters.flatten(), c_ks))
             # e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
             # logging.info(f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}")
@@ -429,13 +431,14 @@ class NLGCG:
                     params=full_parameters,
                     support=len(u_ks.support),
                     mode=inner_mode,
+                    do_logging=do_logging,
                 )
                 parameters = full_parameters_new[:-1].reshape(parameters.shape)
                 c_ks = full_parameters_new[-1]
                 u_ks = Measure(matrix=parameters)
 
-            newton_time = time.time() - t
-            t = time.time()
+            newton_time = time.perf_counter() - t
+            t = time.perf_counter()
             all_iterates = [
                 (u_ks, c_ks),
                 (u_coef, c_coef),
@@ -450,48 +453,41 @@ class NLGCG:
                 self.machine_precision,
                 mode="positive",
                 optimization="full",
+                do_logging=do_logging,
             )
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
-            ssn_2_time = time.time() - t
-            # if k > 2:
-            #     K_support = np.hstack(
-            #         (
-            #             np.ones(self.constant_dim),
-            #             np.zeros(self.kernel_dim - self.constant_dim),
-            #         )
-            #     )
-            #     logging.info(u.duality_pairing(self.kernel).shape)
-            #     logging.info(K_support.shape)
-            #     logging.info(
-            #         f"SSSS: {K_support @ self.grad_f(u.duality_pairing(self.kernel)+ c*K_support)}"
-            #     )
-            #     logging.info(p_u(u.support))
+            ssn_2_time = time.perf_counter() - t
 
-            t = time.time()
+            t = time.perf_counter()
             u_plus, epsilon, global_valid, phi_numerical = self.lgcg_step(
-                p_u, u, c, epsilon, q_u, radii, mode, temperature
+                p_u, u, c, epsilon, q_u, radii, mode, temperature, do_logging
             )
             c_plus = c
             lgcg_lazy += int(global_valid)
             lgcg_total += 1
-            lgcg_time = time.time() - t
+            lgcg_time = time.perf_counter() - t
 
-            times.append(time.time() - initial_time)
+            times.append(time.perf_counter() - initial_time)
             supports.append(len(u.support))
             inner_loop.append(0)
             objective_values.append(self.j(u, c))
             epsilons.append(epsilon)
-            logging.info(
-                f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {phi_numerical:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.14E}"
-            )
-            logging.info(
-                f"ssn_1: {ssn_1_time:.3E}, radii: {radii_time:.3E}, newton: {newton_time:.3E}, ssn_2: {ssn_2_time:.3E}, lgcg: {lgcg_time:.3E}"
-            )
-            logging.info(
-                "============================================================================================="
-            )
+            if do_logging:
+                logging.info(
+                    f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {phi_numerical:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.14E}"
+                )
+                logging.info(
+                    f"ssn_1: {ssn_1_time:.3E}, radii: {radii_time:.3E}, newton: {newton_time:.3E}, ssn_2: {ssn_2_time:.3E}, lgcg: {lgcg_time:.3E}"
+                )
+                logging.info(
+                    "============================================================================================="
+                )
             k += 1
+
+        logging.info(
+            f"NLGCG converged in {times[-1]:.3E} seconds with sparsity {len(u.support)} to objective value {objective_values[-1]:.14E}"
+        )
 
         return (
             u,

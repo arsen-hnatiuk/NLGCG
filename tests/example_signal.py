@@ -15,9 +15,7 @@ import jax.numpy as jnp
 # init jax
 _ = jnp.zeros(0)
 
-import pickle
 import logging
-import time
 import sys
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -34,6 +32,9 @@ from src.lib.measure import Measure
 from src.lib.ssn import SSN
 from src.lib.particle_descent import ParticleDescent
 from src.lib.adaptive_refinement import AdaptiveRefinement
+
+results_dir = Path("results/signal_example")
+results_dir.mkdir(parents=True, exist_ok=True)
 
 
 # Signal Processing
@@ -145,9 +146,7 @@ def j_N(raw_input: np.ndarray) -> float:
 
 
 grad_f_N = jax.jit(jax.grad(f_N))
-hess_f_N = jax.jit(jax.hessian(f_N))
 grad_j_N = jax.jit(jax.grad(j_N))
-hess_j_N = jax.jit(jax.hessian(j_N))
 
 
 # Define functions where the derivatives are taken wrt regularized (weights) and non-regularized(support + constant) parameters
@@ -160,20 +159,11 @@ def f_N_(weights: np.ndarray, support_constant: np.ndarray) -> float:
     return f(kernel(omega).T @ weights + constant * jnp.ones(target.shape))
 
 
-@jax.jit
-def j_N_(weights: np.ndarray, support_constant: np.ndarray) -> float:
-    return f_N_(weights, support_constant) + g(weights)
-
-
 grad_f_N_reg = jax.jit(jax.grad(f_N_, argnums=0))
 hess_f_N_reg = jax.jit(jax.hessian(f_N_, argnums=0))
-grad_j_N_reg = jax.jit(jax.grad(j_N_, argnums=0))
-hess_j_N_reg = jax.jit(jax.hessian(j_N_, argnums=0))
 
 grad_f_N_non_reg = jax.jit(jax.grad(f_N_, argnums=1))
 hess_f_N_non_reg = jax.jit(jax.hessian(f_N_, argnums=1))
-grad_j_N_non_reg = jax.jit(jax.grad(j_N_, argnums=1))
-hess_j_N_non_reg = jax.jit(jax.hessian(j_N_, argnums=1))
 
 
 optimum = 0.21975385192787872
@@ -193,16 +183,13 @@ def create_particle_matrix():
         grad_f=grad_f,
         hess_f=hess_f,
         grad_f_N=grad_f_N,
-        hess_f_N=hess_f_N,
         grad_f_N_non_reg=grad_f_N_non_reg,
         j=j,
         j_N=j_N,
-        j_N_=j_N_,
         p=p,
         grad_p=grad_p,
         hess_p=hess_p,
         grad_j_N=grad_j_N,
-        hess_j_N=hess_j_N,
         alpha=alpha,
         Omega=Omega,
         global_search_resolution=5,
@@ -235,13 +222,12 @@ def create_particle_matrix():
 
     # logging.getLogger().setLevel(logging.WARN)
 
-    # runs_per_Nparticle = {12: 50, 24: 50, 50: 20, 100: 10, 200: 5}
-    runs_per_Nparticle = {3: 1, 100: 1}
+    runs_per_Nparticle = {12: 50, 24: 50, 50: 20, 100: 10, 200: 5}
     success_per_Nparticle = {key: 0 for key in runs_per_Nparticle.keys()}
 
     for Nparticle, Nruns in runs_per_Nparticle.items():
         # Particle Gradient Descent (a_parameter does not matter so much because of linesearch)
-        print(f"running trials with {Nparticle} particles")
+        print(f"running trials with {Nparticle*2} particles")
         a_parameter = 0.0000001
         b_parameter_factor = 0.1
         b_parameter = b_parameter_factor * a_parameter
@@ -296,7 +282,7 @@ def create_particle_matrix():
         )
 
 
-def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_example")):
+def create_plots(Nrun: int = 10):
 
     exp_nlgcg = NLGCG(
         target=target,
@@ -307,16 +293,13 @@ def create_plots(Nrun: int = 10, results_dir: Path = Path("results/signal_exampl
         grad_f=grad_f,
         hess_f=hess_f,
         grad_f_N=grad_f_N,
-        hess_f_N=hess_f_N,
         grad_f_N_non_reg=grad_f_N_non_reg,
         j=j,
         j_N=j_N,
-        j_N_=j_N_,
         p=p,
         grad_p=grad_p,
         hess_p=hess_p,
         grad_j_N=grad_j_N,
-        hess_j_N=hess_j_N,
         alpha=alpha,
         Omega=Omega,
         global_search_resolution=100,

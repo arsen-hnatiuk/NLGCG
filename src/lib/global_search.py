@@ -3,10 +3,8 @@
 import numpy as np
 import scipy as sp
 import logging
-import time
-import jax
 from itertools import product
-from typing import Callable, Union
+from typing import Callable
 from sklearn.utils import gen_batches
 
 from lib.measure import Measure
@@ -29,7 +27,6 @@ class GlobalSearch:
         hess_p: Callable,
         mode: str = "stochastic_adaptive",
         max_found_points: int = 100,
-        max_newton_points: int = 1e3,
         newton_tolerance: float = 5e-2,
         sampling_probability: float = 0.99,
         sample_size=1000,
@@ -45,7 +42,6 @@ class GlobalSearch:
         self.hess_p = hess_p
         self.mode = mode
         self.max_found_points = max_found_points
-        self.max_newton_points = int(max_newton_points)
         self.newton_tolerance = newton_tolerance
         self.sampling_probabilty = sampling_probability
         self.sample_size = sample_size
@@ -117,6 +113,7 @@ class GlobalSearch:
         epsilon: float,
         radius: float,
         temperature: float = 1.0,
+        do_logging: bool = True,
     ) -> np.ndarray:
         grid = (
             np.array(
@@ -165,6 +162,7 @@ class GlobalSearch:
         epsilon: float,
         radius: float,
         temperature: float = 1.0,
+        do_logging: bool = True,
     ) -> tuple:
         lipschitz_function = lambda x: np.linalg.norm(grad_p_u(x), axis=1)
         first_point = np.mean(self.Omega, axis=1)
@@ -189,7 +187,8 @@ class GlobalSearch:
         if success:
             grid = np.vstack([grid, np.array([best_point])])
             grid_vals = np.hstack((grid_vals, np.array([best_val])))
-            logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
+            if do_logging:
+                logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
             return success, grid, grid_vals, best_point, best_val
 
         while mesh > self.newton_tolerance:
@@ -227,14 +226,16 @@ class GlobalSearch:
                 if success:
                     grid = np.vstack([new_grid, np.array([best_point])])
                     grid_vals = np.hstack((new_vals, np.array([best_val])))
-                    logging.info(f"Grid. {len(new_vals)} points, mesh: {mesh:.3E}")
+                    if do_logging:
+                        logging.info(f"Grid. {len(new_vals)} points, mesh: {mesh:.3E}")
                     return success, grid, grid_vals, best_point, best_val
 
             grid = new_grid.copy()
             grid_vals = new_vals.copy()
             del new_grid
             del new_vals
-            logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
+            if do_logging:
+                logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
 
         lipschitzs = self.batch_compute(grid, lipschitz_function)
         relevant_indices = grid_vals + lipschitzs * mesh > best_val
@@ -254,6 +255,7 @@ class GlobalSearch:
         epsilon: float,
         radius: float,
         temperature: float = 1.0,
+        do_logging: bool = True,
     ) -> tuple:
         grid = self.sample_domain(int(1e4), u)
         grid_vals = p_norm(grid)
@@ -379,6 +381,7 @@ class GlobalSearch:
         epsilon: float,
         radius: float,
         temperature: float = 1.0,
+        do_logging: bool = True,
     ) -> tuple:
         lipschitz_function = lambda x: np.linalg.norm(grad_p_u(x), axis=1)
         success = False
@@ -403,7 +406,8 @@ class GlobalSearch:
         best_val = grid_vals[best_index]
         phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
         success = phi_val >= epsilon
-        logging.info(f"Global Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
+        if do_logging:
+            logging.info(f"Global Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
         if success:
             return success, grid, grid_vals, best_point, best_val
 
@@ -442,7 +446,10 @@ class GlobalSearch:
             grid = np.vstack((grid, points_new))
             grid_vals = np.append(grid_vals, points_new_vals)
             mesh = mesh_reduction * mesh
-            logging.info(f"Local Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
+            if do_logging:
+                logging.info(
+                    f"Local Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}"
+                )
 
             # Update the best value
             best_index = np.argmax(points_new_vals)
@@ -485,8 +492,10 @@ class GlobalSearch:
         best_point: np.ndarray,
         best_val: float,
         q_u: float,
+        do_logging: bool,
     ) -> tuple:
-        logging.info(f"Newton start points: {len(grid_vals)}")
+        if do_logging:
+            logging.info(f"Newton start points: {len(grid_vals)}")
         success = False
         batching_factor = (
             self.len_target * self.Omega.shape[0] * (self.Omega.shape[0] + 1)
@@ -606,6 +615,7 @@ class GlobalSearch:
         p_u: Callable,
         radius: float,
         temperature: float = 1.0,
+        do_logging: bool = True,
     ) -> tuple:
         p_norm = lambda x: np.abs(np.array(np.nan_to_num(p_u(x))))
         grad_p = self.grad_p(u, c)
@@ -628,6 +638,7 @@ class GlobalSearch:
                 best_point,
                 best_val,
                 q_u,
+                do_logging,
             )
             if success:
                 return self.post_process_global_search(
@@ -635,7 +646,7 @@ class GlobalSearch:
                 )
 
         success, grid, grid_vals, best_point, best_val = self.get_grid(
-            u, p_norm, grad_p, q_u, epsilon, radius, temperature
+            u, p_norm, grad_p, q_u, epsilon, radius, temperature, do_logging
         )
         if success:
             return self.post_process_global_search(
@@ -644,7 +655,16 @@ class GlobalSearch:
 
         # Optimize the grid with Newton steps
         success, grid, grid_vals, best_point, best_val = self.newton_steps(
-            p_norm, grad_p, hess_p, grid, grid_vals, epsilon, best_point, best_val, q_u
+            p_norm,
+            grad_p,
+            hess_p,
+            grid,
+            grid_vals,
+            epsilon,
+            best_point,
+            best_val,
+            q_u,
+            do_logging,
         )
 
         return self.post_process_global_search(
