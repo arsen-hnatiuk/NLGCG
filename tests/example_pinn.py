@@ -8,15 +8,10 @@ os.environ["XLA_FLAGS"] = (
     "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0"
 )
 import jax
-
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
-
-# init jax
-_ = jnp.zeros(0)
-
 import logging
 import sys
+import gc
 import matplotlib.pyplot as plt
 from pathlib import Path
 
@@ -29,8 +24,12 @@ if src_path not in sys.path:
 
 from nlgcg import NLGCG
 from src.lib.particle_descent import ParticleDescent
+from src.lib.measure import Measure
 
 logging.getLogger().setLevel(logging.INFO)
+# init jax
+jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
 
 # Generate Data and Define Functions
 
@@ -155,16 +154,12 @@ def singleton_kernel(omega: np.ndarray):
 
 grad_kernel = jax.jit(jax.jacobian(singleton_kernel))
 hess_kernel = jax.jit(jax.hessian(singleton_kernel))
-_ = grad_kernel(np.ones(len(Omega)))
-_ = hess_kernel(np.ones(len(Omega)))
 
 kernel = jax.vmap(singleton_kernel)
 grad_kernel = jax.vmap(grad_kernel)
 hess_kernel = jax.vmap(hess_kernel)
 
 g = jax.jit(lambda w: alpha * jnp.linalg.norm(w, ord=1))
-grad_g = jax.jit(jax.grad(g))
-_ = grad_g(jnp.ones(1))
 
 
 @jax.jit
@@ -180,8 +175,6 @@ def r(function_and_laplacian: np.ndarray) -> np.ndarray:
 f = jax.jit(lambda y: 0.5 * jnp.sum((r(y) - target) ** 2) * 4 / len(target))
 grad_f = jax.jit(jax.grad(f))
 hess_f = jax.jit(jax.hessian(f))
-_ = grad_f(jnp.ones(2 * len(int_target) + len(bound_target)))
-_ = hess_f(jnp.ones(2 * len(int_target) + len(bound_target)))
 
 j = lambda u, c: f(
     u.duality_pairing(kernel, kernel_dim)
@@ -234,138 +227,129 @@ def j_N(raw_input: np.ndarray) -> float:
 
 
 grad_f_N = jax.jit(jax.grad(f_N))
-hess_f_N = jax.jit(jax.hessian(f_N))
 grad_j_N = jax.jit(jax.grad(j_N))
-hess_j_N = jax.jit(jax.hessian(j_N))
-
-
-# Define functions where the derivatives are taken wrt regularized (weights) and non-regularized(support + constant) parameters
-@jax.jit
-def f_N_(weights: np.ndarray, support_constant: np.ndarray) -> float:
-    constant = support_constant[-1]
-    omega = support_constant[:-1].reshape(-1, d + 1)
-    return f(kernel(omega).T @ weights + constant * jnp.ones(target.shape))
-
-
-grad_f_N_non_reg = jax.jit(jax.grad(f_N_, argnums=1))
 
 optimum = 26.6427140338004
 
 
-def create_plots(Nrun: int = 10):
-
-    exp_nlgcg = NLGCG(
-        target=target,
-        kernel=kernel,
-        g=g,
-        f=f,
-        f_N=f_N,
-        grad_f=grad_f,
-        hess_f=hess_f,
-        grad_f_N=grad_f_N,
-        grad_f_N_non_reg=grad_f_N_non_reg,
-        j=j,
-        j_N=j_N,
-        p=p,
-        grad_p=grad_p,
-        hess_p=hess_p,
-        grad_j_N=grad_j_N,
-        alpha=alpha,
-        Omega=Omega,
-        global_search_resolution=5,
-        dual_variable_goodness=0.3,
-        constant_dim=constant_dim,
-        kernel_dim=kernel_dim,
-        newton_tolerance=1e-1,
-    )
-
-    exp_particle = ParticleDescent(
-        m=250,
-        j=j,
-        p=p,
-        grad_p=grad_p,
-        Omega=Omega,
-        a_parameter=0.01,
-        b_parameter=0.01 / 10,
-        kernel=kernel,
-        constant_dim=constant_dim,
-        kernel_dim=kernel_dim,
-        alpha=alpha,
-        target=target,
-        g=g,
-        f=f,
-        grad_f=grad_f,
-        hess_f=hess_f,
-        residual_tolerance=5e-14,
-    )
-
-    def adapt_time(times, residuals, frame=100, resolution=1):
-        to_return = []
-        last_pos = 0
-        last_res = residuals[0]
-        for t in range(int(frame / resolution)):
-            minimim_time = t * resolution
-            maximum_time = (t + 1) * resolution
-            added = False
-            for i, (res, tim) in enumerate(zip(residuals[last_pos:], times[last_pos:])):
-                if tim < maximum_time and tim >= minimim_time:
-                    to_return.append(res)
-                    last_res = res
-                    last_pos += i + 1
-                    added = True
-                    break
-            if not added:
-                to_return.append(last_res)
-            if t * resolution >= times[-1]:
+def adapt_time(times, residuals, frame=100, resolution=1):
+    to_return = []
+    last_pos = 0
+    last_res = residuals[0]
+    for t in range(int(frame / resolution)):
+        minimim_time = t * resolution
+        maximum_time = (t + 1) * resolution
+        added = False
+        for i, (res, tim) in enumerate(zip(residuals[last_pos:], times[last_pos:])):
+            if tim < maximum_time and tim >= minimim_time:
+                to_return.append(res)
+                last_res = res
+                last_pos += i + 1
+                added = True
                 break
-        to_return.append(residuals[-1])
-        return to_return
+        if not added:
+            to_return.append(last_res)
+        if t * resolution >= times[-1]:
+            break
+    to_return.append(residuals[-1])
+    return to_return
 
-    def bring_to_same_length(arrays):
-        max_length = max(len(arr) for arr in arrays)
-        new_arrays = []
-        for arr in arrays:
-            if len(arr) < max_length:
-                last_val = arr[-1]
-                arr = arr + [last_val] * (max_length - len(arr))
-            new_arrays.append(arr)
-        return new_arrays
 
+def bring_to_same_length(arrays):
+    max_length = max(len(arr) for arr in arrays)
+    new_arrays = []
+    for arr in arrays:
+        if len(arr) < max_length:
+            last_val = arr[-1]
+            arr = arr + [last_val] * (max_length - len(arr))
+        new_arrays.append(arr)
+    return new_arrays
+
+
+def create_plots(Nrun: int = 10):
     resolution = 1  # time resolution for the plots (seconds)
     frame_size = 1000  # Time frame tracked for the residuals (seconds)
 
-    # deterministic NLGCG
-    logging.info("Running deterministic NLGCG")
-    (
-        u_opt,
-        c_opt,
-        times_det_nlgcg,
-        supports_det_nlgcg,
-        inner_loop,
-        lgcg_lazy,
-        lgcg_total,
-        objective_values_det_nlgcg,
-        dropped_tot,
-        epsilons,
-    ) = exp_nlgcg.solve(
-        tol=5e-14,
-        max_radius=max_radius,
-        temperature=0.1,
-        mode="deterministic",
-        do_logging=False,
-    )
-    residuals_det_nlgcg = adapt_time(
-        times_det_nlgcg,
-        [obj - optimum for obj in objective_values_det_nlgcg],
-        frame=frame_size,
-        resolution=resolution,
-    )
+    # # deterministic NLGCG
+    # logging.info("Running deterministic NLGCG")
+    # exp_nlgcg = NLGCG(
+    #     target=target,
+    #     kernel=kernel,
+    #     g=g,
+    #     f=f,
+    #     f_N=f_N,
+    #     grad_f=grad_f,
+    #     hess_f=hess_f,
+    #     grad_f_N=grad_f_N,
+    #     j=j,
+    #     j_N=j_N,
+    #     p=p,
+    #     grad_p=grad_p,
+    #     hess_p=hess_p,
+    #     grad_j_N=grad_j_N,
+    #     alpha=alpha,
+    #     Omega=Omega,
+    #     global_search_resolution=5,
+    #     dual_variable_goodness=0.3,
+    #     constant_dim=constant_dim,
+    #     kernel_dim=kernel_dim,
+    #     newton_tolerance=1e-1,
+    # )
+    # (
+    #     u_opt,
+    #     c_opt,
+    #     times_det_nlgcg,
+    #     supports_det_nlgcg,
+    #     inner_loop,
+    #     lgcg_lazy,
+    #     lgcg_total,
+    #     objective_values_det_nlgcg,
+    #     dropped_tot,
+    #     epsilons,
+    # ) = exp_nlgcg.solve(
+    #     tol=5e-14,
+    #     max_radius=max_radius,
+    #     temperature=0.1,
+    #     mode="deterministic",
+    #     do_logging=False,
+    # )
+    # residuals_det_nlgcg = adapt_time(
+    #     times_det_nlgcg,
+    #     [obj - optimum for obj in objective_values_det_nlgcg],
+    #     frame=frame_size,
+    #     resolution=resolution,
+    # )
+    # del exp_nlgcg
+    # gc.collect()
 
-    # NLGCG stochastic
+    # NLGCG randomized
     nlgcg_residuals = []
     nlgcg_supports = []
     for i in range(Nrun):
-        logging.info(f"Running stochastic NLGCG (trial {i})")
+        logging.info(f"Running randomized NLGCG (trial {i})")
+        exp_nlgcg = NLGCG(
+            target=target,
+            kernel=kernel,
+            g=g,
+            f=f,
+            f_N=f_N,
+            grad_f=grad_f,
+            hess_f=hess_f,
+            grad_f_N=grad_f_N,
+            j=j,
+            j_N=j_N,
+            p=p,
+            grad_p=grad_p,
+            hess_p=hess_p,
+            grad_j_N=grad_j_N,
+            alpha=alpha,
+            Omega=Omega,
+            global_search_resolution=5,
+            dual_variable_goodness=0.3,
+            constant_dim=constant_dim,
+            kernel_dim=kernel_dim,
+            newton_tolerance=1e-1,
+        )
         (
             u_nlgcg,
             c_nlgcg,
@@ -388,6 +372,8 @@ def create_plots(Nrun: int = 10):
         )
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
+        del exp_nlgcg
+        gc.collect()
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_residuals_std = np.std(bring_to_same_length(nlgcg_residuals), axis=0)
@@ -399,6 +385,25 @@ def create_plots(Nrun: int = 10):
     particle_supports = []
     for i in range(Nrun):
         logging.info(f"Running Particle descent (trial {i})")
+        exp_particle = ParticleDescent(
+            m=250,
+            j=j,
+            p=p,
+            grad_p=grad_p,
+            Omega=Omega,
+            a_parameter=0.01,
+            b_parameter=0.01 / 10,
+            kernel=kernel,
+            constant_dim=constant_dim,
+            kernel_dim=kernel_dim,
+            alpha=alpha,
+            target=target,
+            g=g,
+            f=f,
+            grad_f=grad_f,
+            hess_f=hess_f,
+            residual_tolerance=5e-14,
+        )
         max_iter = int(1e5)
         u, c, objective_values_particle, supports_particle, times_particle, success = (
             exp_particle.solve(max_iters=max_iter, mode="exponential", do_logging=False)
@@ -411,6 +416,8 @@ def create_plots(Nrun: int = 10):
         )
         particle_residuals.append(local_residuals)
         particle_supports.append(supports_particle)
+        del exp_particle
+        gc.collect()
 
     particle_residuals_filtered = []
     converged_frac = 0

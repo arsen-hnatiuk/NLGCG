@@ -96,8 +96,6 @@ def f(y: np.ndarray) -> float:
 
 grad_f = jax.jit(jax.grad(f))
 hess_f = jax.jit(jax.hessian(f))
-_ = grad_f(jnp.zeros(target.shape[0]))
-_ = hess_f(jnp.zeros(target.shape[0]))
 
 j = lambda u, c: f(u.duality_pairing(kernel) + c * np.ones(target.shape)) + g(
     u.coefficients
@@ -145,17 +143,6 @@ def j_N(raw_input: np.ndarray) -> float:
 grad_f_N = jax.jit(jax.grad(f_N))
 grad_j_N = jax.jit(jax.grad(j_N))
 
-
-# Define functions where the derivatives are taken wrt regularized (weights) and non-regularized(support + constant) parameters
-@jax.jit
-def f_N_(weights: np.ndarray, support_constant: np.ndarray) -> float:
-    constant = support_constant[-1]
-    omega = support_constant[:-1].reshape(-1, d + 1)
-    return f(kernel(omega).T @ weights + constant * jnp.ones(target.shape))
-
-
-grad_f_N_non_reg = jax.jit(jax.grad(f_N_, argnums=1))
-
 optimum = 0.03394931259295045
 
 
@@ -170,7 +157,6 @@ def create_plots(Nrun: int = 10):
         grad_f=grad_f,
         hess_f=hess_f,
         grad_f_N=grad_f_N,
-        grad_f_N_non_reg=grad_f_N_non_reg,
         j=j,
         j_N=j_N,
         p=p,

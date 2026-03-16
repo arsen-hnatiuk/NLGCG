@@ -28,7 +28,6 @@ class NLGCG:
         grad_f: Callable,
         hess_f: Callable,
         grad_f_N: Callable,
-        grad_f_N_non_reg: Callable,  # gradient of non-regularized variables
         j: Callable,  # Objective
         j_N: Callable,  # parameterized objective
         p: Callable,  # Dual variable
@@ -58,7 +57,6 @@ class NLGCG:
         self.grad_f = grad_f
         self.hess_f = hess_f
         self.grad_f_N = grad_f_N
-        self.grad_f_N_non_reg = grad_f_N_non_reg
         self.Omega = Omega  # Example [[0,1],[1,2]] for [0,1]x[1,2]
         self.max_radius = 1
         self.j = j
@@ -79,6 +77,43 @@ class NLGCG:
         self.dual_variable_goodness = dual_variable_goodness
         self.ssn_steps = ssn_steps
         self.newton_tolerance = newton_tolerance
+        self.initialize_functions()
+
+    def initialize_functions(self):
+        _ = self.kernel(np.ones((1, len(self.Omega))))
+        _ = self.p(self.u_0, self.c_0)(np.ones((1, len(self.Omega))))
+        _ = self.grad_p(self.u_0, self.c_0)(np.ones((1, len(self.Omega))))
+        _ = self.hess_p(self.u_0, self.c_0)(np.ones((1, len(self.Omega))))
+        _ = self.g(np.ones(1))
+        _ = self.f(
+            np.hstack(
+                (
+                    np.ones(self.constant_dim),
+                    np.zeros(self.kernel_dim - self.constant_dim),
+                )
+            )
+        )
+        _ = self.grad_f(
+            np.hstack(
+                (
+                    np.ones(self.constant_dim),
+                    np.zeros(self.kernel_dim - self.constant_dim),
+                )
+            )
+        )
+        _ = self.hess_f(
+            np.hstack(
+                (
+                    np.ones(self.constant_dim),
+                    np.zeros(self.kernel_dim - self.constant_dim),
+                )
+            )
+        )
+        _ = self.f_N(np.ones(self.Omega.shape[0] + 2))
+        _ = self.grad_f_N(np.ones(self.Omega.shape[0] + 2))
+        _ = self.j(self.u_0, self.c_0)
+        _ = self.j_N(np.ones(self.Omega.shape[0] + 2))
+        _ = self.grad_j_N(np.ones(self.Omega.shape[0] + 2))
 
     def finite_dimensional_step(
         self,
@@ -122,6 +157,7 @@ class NLGCG:
             maximum_iterations=self.ssn_steps,
         )
         ssn_solution = ssn.solve(tol=Psi, u_0=u_0, do_logging=do_logging)
+        del ssn
         if mode == "positive":
             ssn_normal = ssn_solution * signs
             ssn_clipped = np.maximum(ssn_solution, np.zeros(len(ssn_solution))) * signs
@@ -278,6 +314,7 @@ class NLGCG:
         best_val, found_points, global_valid = global_search_object.solve(
             u, c, epsilon, q_u, p_u, radius, temperature, do_logging
         )
+        del global_search_object
         phi = self.M * max(best_val - self.alpha, 0) + q_u
         u_norm = np.linalg.norm(u.coefficients, ord=1)
         if u_norm:
@@ -359,11 +396,11 @@ class NLGCG:
             f_N=self.f_N,
             grad_f_N=self.grad_f_N,
             grad_j_N=self.grad_j_N,
-            grad_f_N_non_reg=self.grad_f_N_non_reg,
         )
         params_new = newton_method.solve(
             k=k, params=params, support=support, do_logging=do_logging
         )
+        del newton_method
         return params_new
 
     def solve(

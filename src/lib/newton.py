@@ -24,7 +24,6 @@ class Newton:
         f_N: Callable,  # Parameterized diligence function
         grad_f_N: Callable,
         grad_j_N: Callable,
-        grad_f_N_non_reg: Callable,  # gradient of non-regularized variables
         max_inner_loop: int = 10,
         quasi_newton_storage: int = 5,
         lbfgs_c_0: float = 1e-4,
@@ -42,7 +41,6 @@ class Newton:
         self.f_N = f_N
         self.grad_f_N = grad_f_N
         self.grad_j_N = grad_j_N
-        self.grad_f_N_non_reg = grad_f_N_non_reg
         self.max_inner_loop = max_inner_loop
         self.quasi_newton_storage = quasi_newton_storage
         self.lbfgs_c_0 = lbfgs_c_0
@@ -55,14 +53,10 @@ class Newton:
         self.armijo_constant = armijo_constant  # For Armijo rule
         self.delta_min = delta_min
         self.machine_precision = 5e-14
-        if mode == "globalized_newton":
-            self.solve = self.globalized_newton
-        elif mode == "globalized_lbfgs":
+        if mode == "globalized_lbfgs":
             self.solve = self.globalized_lbfgs
         elif mode == "trust_region":
             self.solve = self.trust_region
-        elif mode == "trust_region_non_reg":
-            self.solve = self.trust_region_non_reg
         elif mode == "trust_region_ssn":
             self.solve = self.trust_region_ssn
 
@@ -187,14 +181,12 @@ class Newton:
 
     def steihaug_cg(
         self,
-        params_reg: np.ndarray,
         params: np.ndarray,
         hess_grad: np.ndarray,
         grad: np.ndarray,
         eps: float,
         delta: float,
         m: Callable,
-        mode: str,
     ) -> tuple:
         r = grad
         r_r = float(r @ r)
@@ -234,18 +226,11 @@ class Newton:
             r = r_plus.copy()
             r_r = r_plus_r_plus
             p = p_plus.copy()
-            if mode == "non_reg":
-                S_p = jax.jvp(
-                    self.grad_f_N_non_reg,
-                    (params_reg, params),
-                    (np.zeros_like(params_reg), p),
-                )[1]
-            else:
-                S_p = jax.jvp(
-                    self.grad_j_N,
-                    (params,),
-                    (p,),
-                )[1]
+            S_p = jax.jvp(
+                self.grad_j_N,
+                (params,),
+                (p,),
+            )[1]
         return q, i + 1, np.sqrt(r_r)
 
     def trust_region(
@@ -281,14 +266,12 @@ class Newton:
                 min((np.sqrt(grad_norm), 0.01)) * grad_norm, self.machine_precision
             )
             dir, steihaug_iters, r_norm = self.steihaug_cg(
-                params_reg=np.zeros_like(params),
                 params=params,
                 hess_grad=hess_grad,
                 grad=grad,
                 eps=eps,
                 delta=delta,
                 m=m,
-                mode="full",
             )
 
             params_plus = params + dir
