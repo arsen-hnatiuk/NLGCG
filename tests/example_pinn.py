@@ -3,10 +3,6 @@
 
 import numpy as np
 import os
-
-os.environ["XLA_FLAGS"] = (
-    "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0"
-)
 import jax
 import jax.numpy as jnp
 import logging
@@ -26,6 +22,9 @@ from nlgcg import NLGCG
 from src.lib.particle_descent import ParticleDescent
 from src.lib.measure import Measure
 
+os.environ["XLA_FLAGS"] = (
+    "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0 xla_python_client_preallocate=false xla_python_client_mem_fraction=0.5"
+)
 logging.getLogger().setLevel(logging.INFO)
 # init jax
 jax.config.update("jax_enable_x64", True)
@@ -41,195 +40,296 @@ variance_exponent = 2.01
 alpha = 1e-2
 lambda_ = 1000
 observation_resolution = 20
+max_radius = (Omega[0][1] - Omega[0][0]) / 100
+optimum = 26.6427140337694
 
 
-@jax.jit
-def true_function(x: np.ndarray):
-    return (
-        jnp.tanh(
-            4
-            * (
-                0.3
-                - jnp.linalg.norm(
-                    x - np.array([0.300000000000000001, 0.3000000000000001])
+def define_experiment():
+    @jax.jit
+    def true_function(x: np.ndarray):
+        return (
+            jnp.tanh(
+                4
+                * (
+                    0.3
+                    - jnp.linalg.norm(
+                        x - np.array([0.300000000000000001, 0.3000000000000001])
+                    )
+                )
+            )
+            + jnp.tanh(
+                12
+                * (
+                    0.15
+                    - jnp.linalg.norm(
+                        x + np.array([0.300000000000001, 0.3000000000000001])
+                    )
+                )
+            )
+            + 2
+        )
+
+    grad_true_function = jax.jit(jax.grad(true_function))
+    hess_true_function = jax.jit(jax.hessian(true_function))
+    true_function = jax.vmap(true_function)
+    grad_true_function = jax.vmap(grad_true_function)
+    hess_true_function = jax.vmap(hess_true_function)
+
+    int_function = true_function
+    grad_int_function = grad_true_function
+    hess_int_function = hess_true_function
+    laplacian_int_function = lambda omega: jnp.trace(
+        hess_int_function(omega), axis1=1, axis2=2
+    )
+    bound_function = true_function
+
+    observations_raw = (
+        np.array(
+            np.meshgrid(
+                *(
+                    np.linspace(
+                        bound[0], bound[1], observation_resolution, endpoint=True
+                    )
+                    for bound in omega_space
                 )
             )
         )
-        + jnp.tanh(
-            12
-            * (
-                0.15
-                - jnp.linalg.norm(x + np.array([0.300000000000001, 0.3000000000000001]))
-            )
-        )
-        + 2
+        .reshape(len(omega_space), -1)
+        .T
     )
-
-
-grad_true_function = jax.jit(jax.grad(true_function))
-hess_true_function = jax.jit(jax.hessian(true_function))
-true_function = jax.vmap(true_function)
-grad_true_function = jax.vmap(grad_true_function)
-hess_true_function = jax.vmap(hess_true_function)
-
-int_function = true_function
-grad_int_function = grad_true_function
-hess_int_function = hess_true_function
-laplacian_int_function = lambda omega: jnp.trace(
-    hess_int_function(omega), axis1=1, axis2=2
-)
-bound_function = true_function
-
-max_radius = (Omega[0][1] - Omega[0][0]) / 100
-
-observations_raw = (
-    np.array(
-        np.meshgrid(
-            *(
-                np.linspace(bound[0], bound[1], observation_resolution, endpoint=True)
-                for bound in omega_space
-            )
-        )
-    )
-    .reshape(len(omega_space), -1)
-    .T
-)
-int_observations = np.array(
-    [
-        obs
-        for obs in observations_raw
-        if all(obs != omega_space[0][0]) and all(obs != omega_space[0][1])
-    ]
-)
-bound_observations = np.array(
-    [
-        obs
-        for obs in observations_raw
-        if any(obs == omega_space[0][0]) or any(obs == omega_space[0][1])
-    ]
-)
-
-int_target = int_function(int_observations) ** 3 - laplacian_int_function(
-    int_observations
-)
-bound_target = np.sqrt(lambda_) * bound_function(bound_observations)
-target = np.hstack((int_target, bound_target))
-observations = np.vstack((int_observations, bound_observations))
-
-constant_dim = len(target)
-kernel_dim = len(target) + len(int_target)
-
-
-@jax.jit
-def adjusted_sigmoid(x):
-    return 2 * jnp.exp(2 * x) / (1 + jnp.exp(2 * x)) - 1
-
-
-@jax.jit
-def raw_kernel(omega: np.ndarray, x: np.ndarray):
-    # Both inputs 1D
-    sigma = omega[0]
-    x_omega = omega[1:]
-    variance_factor = adjusted_sigmoid(sigma**variance_exponent)
-    inner = -(jnp.sum((x_omega - x) ** 2)) / (2 * sigma**2)
-    outer = (jnp.exp(inner) * variance_factor) / (np.sqrt(2 * np.pi) ** d)
-    return outer
-
-
-hess_raw_kernel = jax.jit(jax.hessian(raw_kernel, argnums=1))
-raw_kernel = jax.vmap(raw_kernel, (None, 0), 0)
-hess_raw_kernel = jax.vmap(hess_raw_kernel, (None, 0), 0)
-
-
-@jax.jit
-def singleton_kernel(omega: np.ndarray):
-    # function, laplacian
-    return jnp.hstack(
+    int_observations = np.array(
         [
-            raw_kernel(omega, observations),
-            jnp.trace(hess_raw_kernel(omega, int_observations), axis1=1, axis2=2),
+            obs
+            for obs in observations_raw
+            if all(obs != omega_space[0][0]) and all(obs != omega_space[0][1])
+        ]
+    )
+    bound_observations = np.array(
+        [
+            obs
+            for obs in observations_raw
+            if any(obs == omega_space[0][0]) or any(obs == omega_space[0][1])
         ]
     )
 
-
-grad_kernel = jax.jit(jax.jacobian(singleton_kernel))
-hess_kernel = jax.jit(jax.hessian(singleton_kernel))
-
-kernel = jax.vmap(singleton_kernel)
-grad_kernel = jax.vmap(grad_kernel)
-hess_kernel = jax.vmap(hess_kernel)
-
-g = jax.jit(lambda w: alpha * jnp.linalg.norm(w, ord=1))
-
-
-@jax.jit
-def r(function_and_laplacian: np.ndarray) -> np.ndarray:
-    u = function_and_laplacian[: len(target)]  # shape (len(target),)
-    laplacian = function_and_laplacian[len(target) :]  # shape (len(int_target),)
-    to_return = jnp.hstack(
-        (u[: len(int_target)] ** 3 - laplacian, np.sqrt(lambda_) * u[len(int_target) :])
+    int_target = int_function(int_observations) ** 3 - laplacian_int_function(
+        int_observations
     )
-    return to_return
+    bound_target = np.sqrt(lambda_) * bound_function(bound_observations)
+    target = np.hstack((int_target, bound_target))
+    observations = np.vstack((int_observations, bound_observations))
 
+    constant_dim = len(target)
+    kernel_dim = len(target) + len(int_target)
 
-f = jax.jit(lambda y: 0.5 * jnp.sum((r(y) - target) ** 2) * 4 / len(target))
-grad_f = jax.jit(jax.grad(f))
-hess_f = jax.jit(jax.hessian(f))
+    @jax.jit
+    def adjusted_sigmoid(x):
+        return 2 * jnp.exp(2 * x) / (1 + jnp.exp(2 * x)) - 1
 
-j = lambda u, c: f(
-    u.duality_pairing(kernel, kernel_dim)
-    + np.hstack((c * np.ones(constant_dim), np.zeros(kernel_dim - constant_dim)))
-) + g(u.coefficients)
+    @jax.jit
+    def raw_kernel(omega: np.ndarray, x: np.ndarray):
+        # Both inputs 1D
+        sigma = omega[0]
+        x_omega = omega[1:]
+        variance_factor = adjusted_sigmoid(sigma**variance_exponent)
+        inner = -(jnp.sum((x_omega - x) ** 2)) / (2 * sigma**2)
+        outer = (jnp.exp(inner) * variance_factor) / (np.sqrt(2 * np.pi) ** d)
+        return outer
 
+    hess_raw_kernel = jax.jit(jax.hessian(raw_kernel, argnums=1))
+    raw_kernel = jax.vmap(raw_kernel, (None, 0), 0)
+    hess_raw_kernel = jax.vmap(hess_raw_kernel, (None, 0), 0)
 
-@jax.jit
-def p_raw(parameters: np.ndarray, c: float, omega: np.ndarray):
-    coefficients = parameters[:, 0]
-    support = parameters[:, 1:]
-    Ku = jnp.tensordot(kernel(support), coefficients, axes=([0], [0]))
-    constant_term = jnp.hstack(
-        (c * jnp.ones(constant_dim), jnp.zeros(kernel_dim - constant_dim))
+    @jax.jit
+    def singleton_kernel(omega: np.ndarray):
+        # function, laplacian
+        return jnp.hstack(
+            [
+                raw_kernel(omega, observations),
+                jnp.trace(hess_raw_kernel(omega, int_observations), axis1=1, axis2=2),
+            ]
+        )
+
+    grad_kernel = jax.jit(jax.jacobian(singleton_kernel))
+    hess_kernel = jax.jit(jax.hessian(singleton_kernel))
+
+    kernel = jax.vmap(singleton_kernel)
+    grad_kernel = jax.vmap(grad_kernel)
+    hess_kernel = jax.vmap(hess_kernel)
+
+    g = jax.jit(lambda w: alpha * jnp.linalg.norm(w, ord=1))
+
+    @jax.jit
+    def r(function_and_laplacian: np.ndarray) -> np.ndarray:
+        u = function_and_laplacian[: len(target)]  # shape (len(target),)
+        laplacian = function_and_laplacian[len(target) :]  # shape (len(int_target),)
+        to_return = jnp.hstack(
+            (
+                u[: len(int_target)] ** 3 - laplacian,
+                np.sqrt(lambda_) * u[len(int_target) :],
+            )
+        )
+        return to_return
+
+    f = jax.jit(lambda y: 0.5 * jnp.sum((r(y) - target) ** 2) * 4 / len(target))
+    grad_f = jax.jit(jax.grad(f))
+    hess_f = jax.jit(jax.hessian(f))
+
+    j = lambda u, c: f(
+        u.duality_pairing(kernel, kernel_dim)
+        + np.hstack((c * np.ones(constant_dim), np.zeros(kernel_dim - constant_dim)))
+    ) + g(u.coefficients)
+
+    @jax.jit
+    def p_raw(parameters: np.ndarray, c: float, omega: np.ndarray):
+        coefficients = parameters[:, 0]
+        support = parameters[:, 1:]
+        Ku = jnp.tensordot(kernel(support), coefficients, axes=([0], [0]))
+        constant_term = jnp.hstack(
+            (c * jnp.ones(constant_dim), jnp.zeros(kernel_dim - constant_dim))
+        )
+        return singleton_kernel(omega) @ -grad_f(Ku + constant_term)
+
+    grad_p_raw = jax.jit(jax.grad(p_raw, argnums=2))
+    hess_p_raw = jax.jit(jax.hessian(p_raw, argnums=2))
+
+    p_raw = jax.jit(jax.vmap(p_raw, in_axes=(None, None, 0), out_axes=0))
+    grad_p_raw = jax.jit(jax.vmap(grad_p_raw, in_axes=(None, None, 0), out_axes=0))
+    hess_p_raw = jax.jit(jax.vmap(hess_p_raw, in_axes=(None, None, 0), out_axes=0))
+
+    p = lambda u, c: lambda omega: p_raw(u.to_matrix(len(Omega)), c, omega)
+    grad_p = lambda u, c: lambda omega: grad_p_raw(u.to_matrix(len(Omega)), c, omega)
+    hess_p = lambda u, c: lambda omega: hess_p_raw(u.to_matrix(len(Omega)), c, omega)
+
+    # Parameterized versions of f and j
+    @jax.jit
+    def f_N(raw_input: np.ndarray) -> float:
+        constant = raw_input[-1]
+        input = raw_input[:-1].reshape(-1, d + 2)
+        weights = input[:, 0]
+        omega = input[:, 1:]
+        return f(
+            kernel(omega).T @ weights
+            + constant
+            * jnp.hstack((jnp.ones(constant_dim), jnp.zeros(kernel_dim - constant_dim)))
+        )
+
+    @jax.jit
+    def j_N(raw_input: np.ndarray) -> float:
+        input = raw_input[:-1].reshape(-1, d + 2)
+        weights = input[:, 0]
+        return f_N(raw_input) + g(weights)
+
+    grad_f_N = jax.jit(jax.grad(f_N))
+    grad_j_N = jax.jit(jax.grad(j_N))
+
+    return (
+        true_function,
+        target,
+        kernel,
+        g,
+        f,
+        f_N,
+        grad_f,
+        hess_f,
+        grad_f_N,
+        j,
+        j_N,
+        p,
+        grad_p,
+        hess_p,
+        grad_j_N,
+        constant_dim,
+        kernel_dim,
     )
-    return singleton_kernel(omega) @ -grad_f(Ku + constant_term)
 
 
-grad_p_raw = jax.jit(jax.grad(p_raw, argnums=2))
-hess_p_raw = jax.jit(jax.hessian(p_raw, argnums=2))
-
-p_raw = jax.jit(jax.vmap(p_raw, in_axes=(None, None, 0), out_axes=0))
-grad_p_raw = jax.jit(jax.vmap(grad_p_raw, in_axes=(None, None, 0), out_axes=0))
-hess_p_raw = jax.jit(jax.vmap(hess_p_raw, in_axes=(None, None, 0), out_axes=0))
-
-p = lambda u, c: lambda omega: p_raw(u.to_matrix(len(Omega)), c, omega)
-grad_p = lambda u, c: lambda omega: grad_p_raw(u.to_matrix(len(Omega)), c, omega)
-hess_p = lambda u, c: lambda omega: hess_p_raw(u.to_matrix(len(Omega)), c, omega)
-
-
-# Parameterized versions of f and j
-@jax.jit
-def f_N(raw_input: np.ndarray) -> float:
-    constant = raw_input[-1]
-    input = raw_input[:-1].reshape(-1, d + 2)
-    weights = input[:, 0]
-    omega = input[:, 1:]
-    return f(
-        kernel(omega).T @ weights
-        + constant
-        * jnp.hstack((jnp.ones(constant_dim), jnp.zeros(kernel_dim - constant_dim)))
+def define_nlgcg_experiment():
+    (
+        true_function,
+        target,
+        kernel,
+        g,
+        f,
+        f_N,
+        grad_f,
+        hess_f,
+        grad_f_N,
+        j,
+        j_N,
+        p,
+        grad_p,
+        hess_p,
+        grad_j_N,
+        constant_dim,
+        kernel_dim,
+    ) = define_experiment()
+    exp_nlgcg = NLGCG(
+        target=target,
+        kernel=kernel,
+        g=g,
+        f=f,
+        f_N=f_N,
+        grad_f=grad_f,
+        hess_f=hess_f,
+        grad_f_N=grad_f_N,
+        j=j,
+        j_N=j_N,
+        p=p,
+        grad_p=grad_p,
+        hess_p=hess_p,
+        grad_j_N=grad_j_N,
+        alpha=alpha,
+        Omega=Omega,
+        global_search_resolution=5,
+        dual_variable_goodness=0.3,
+        constant_dim=constant_dim,
+        kernel_dim=kernel_dim,
+        newton_tolerance=1e-1,
     )
+    return exp_nlgcg, true_function
 
 
-@jax.jit
-def j_N(raw_input: np.ndarray) -> float:
-    input = raw_input[:-1].reshape(-1, d + 2)
-    weights = input[:, 0]
-    return f_N(raw_input) + g(weights)
-
-
-grad_f_N = jax.jit(jax.grad(f_N))
-grad_j_N = jax.jit(jax.grad(j_N))
-
-optimum = 26.6427140338004
+def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6):
+    (
+        true_function,
+        target,
+        kernel,
+        g,
+        f,
+        f_N,
+        grad_f,
+        hess_f,
+        grad_f_N,
+        j,
+        j_N,
+        p,
+        grad_p,
+        hess_p,
+        grad_j_N,
+        constant_dim,
+        kernel_dim,
+    ) = define_experiment()
+    exp_particle = ParticleDescent(
+        m=m,
+        j=j,
+        p=p,
+        grad_p=grad_p,
+        Omega=Omega,
+        a_parameter=a_parameter,
+        b_parameter=b_parameter,
+        kernel=kernel,
+        constant_dim=constant_dim,
+        kernel_dim=kernel_dim,
+        alpha=alpha,
+        target=target,
+        g=g,
+        f=f,
+        grad_f=grad_f,
+        hess_f=hess_f,
+        residual_tolerance=5e-14,
+    )
+    return exp_particle, true_function
 
 
 def adapt_time(times, residuals, frame=100, resolution=1):
@@ -270,86 +370,44 @@ def create_plots(Nrun: int = 10):
     resolution = 1  # time resolution for the plots (seconds)
     frame_size = 1000  # Time frame tracked for the residuals (seconds)
 
-    # # deterministic NLGCG
-    # logging.info("Running deterministic NLGCG")
-    # exp_nlgcg = NLGCG(
-    #     target=target,
-    #     kernel=kernel,
-    #     g=g,
-    #     f=f,
-    #     f_N=f_N,
-    #     grad_f=grad_f,
-    #     hess_f=hess_f,
-    #     grad_f_N=grad_f_N,
-    #     j=j,
-    #     j_N=j_N,
-    #     p=p,
-    #     grad_p=grad_p,
-    #     hess_p=hess_p,
-    #     grad_j_N=grad_j_N,
-    #     alpha=alpha,
-    #     Omega=Omega,
-    #     global_search_resolution=5,
-    #     dual_variable_goodness=0.3,
-    #     constant_dim=constant_dim,
-    #     kernel_dim=kernel_dim,
-    #     newton_tolerance=1e-1,
-    # )
-    # (
-    #     u_opt,
-    #     c_opt,
-    #     times_det_nlgcg,
-    #     supports_det_nlgcg,
-    #     inner_loop,
-    #     lgcg_lazy,
-    #     lgcg_total,
-    #     objective_values_det_nlgcg,
-    #     dropped_tot,
-    #     epsilons,
-    # ) = exp_nlgcg.solve(
-    #     tol=5e-14,
-    #     max_radius=max_radius,
-    #     temperature=0.1,
-    #     mode="deterministic",
-    #     do_logging=False,
-    # )
-    # residuals_det_nlgcg = adapt_time(
-    #     times_det_nlgcg,
-    #     [obj - optimum for obj in objective_values_det_nlgcg],
-    #     frame=frame_size,
-    #     resolution=resolution,
-    # )
-    # del exp_nlgcg
-    # gc.collect()
+    # deterministic NLGCG
+    logging.info("Running deterministic NLGCG")
+    exp_nlgcg, true_function = define_nlgcg_experiment()
+    (
+        u_opt,
+        c_opt,
+        times_det_nlgcg,
+        supports_det_nlgcg,
+        inner_loop,
+        lgcg_lazy,
+        lgcg_total,
+        objective_values_det_nlgcg,
+        dropped_tot,
+        epsilons,
+    ) = exp_nlgcg.solve(
+        tol=5e-14,
+        max_radius=max_radius,
+        temperature=0.1,
+        mode="deterministic",
+        do_logging=False,
+    )
+    residuals_det_nlgcg = adapt_time(
+        times_det_nlgcg,
+        [obj - optimum for obj in objective_values_det_nlgcg],
+        frame=frame_size,
+        resolution=resolution,
+    )
+    del exp_nlgcg
+    gc.collect()
 
-    # NLGCG randomized
+    # NLGCG stochastic
     nlgcg_residuals = []
+    nlgcg_residuals_filtered = []
     nlgcg_supports = []
+    nlgcg_converged = 0
     for i in range(Nrun):
-        logging.info(f"Running randomized NLGCG (trial {i})")
-        exp_nlgcg = NLGCG(
-            target=target,
-            kernel=kernel,
-            g=g,
-            f=f,
-            f_N=f_N,
-            grad_f=grad_f,
-            hess_f=hess_f,
-            grad_f_N=grad_f_N,
-            j=j,
-            j_N=j_N,
-            p=p,
-            grad_p=grad_p,
-            hess_p=hess_p,
-            grad_j_N=grad_j_N,
-            alpha=alpha,
-            Omega=Omega,
-            global_search_resolution=5,
-            dual_variable_goodness=0.3,
-            constant_dim=constant_dim,
-            kernel_dim=kernel_dim,
-            newton_tolerance=1e-1,
-        )
+        logging.info(f"Running stochastic NLGCG (trial {i+1})")
+        exp_nlgcg, true_function = define_nlgcg_experiment()
         (
             u_nlgcg,
             c_nlgcg,
@@ -370,63 +428,64 @@ def create_plots(Nrun: int = 10):
             frame=frame_size,
             resolution=resolution,
         )
+        if local_residuals[-1] < 1e-5:
+            nlgcg_residuals_filtered.append(local_residuals)
+            nlgcg_converged += 1
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
         del exp_nlgcg
-        gc.collect()
+    logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
-    nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
-    nlgcg_residuals_std = np.std(bring_to_same_length(nlgcg_residuals), axis=0)
+    if nlgcg_converged >= 2:
+        nlgcg_residuals_mean = np.mean(
+            bring_to_same_length(nlgcg_residuals_filtered), axis=0
+        )
+        nlgcg_residuals_std = np.std(
+            bring_to_same_length(nlgcg_residuals_filtered), axis=0
+        )
+    else:
+        nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
+        nlgcg_residuals_std = np.std(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
     nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
 
     # Particle Descent Stochastic
     particle_residuals = []
+    particle_residuals_filtered = []
     particle_supports = []
+    particle_converged = 0
     for i in range(Nrun):
-        logging.info(f"Running Particle descent (trial {i})")
-        exp_particle = ParticleDescent(
-            m=250,
-            j=j,
-            p=p,
-            grad_p=grad_p,
-            Omega=Omega,
-            a_parameter=0.01,
-            b_parameter=0.01 / 10,
-            kernel=kernel,
-            constant_dim=constant_dim,
-            kernel_dim=kernel_dim,
-            alpha=alpha,
-            target=target,
-            g=g,
-            f=f,
-            grad_f=grad_f,
-            hess_f=hess_f,
-            residual_tolerance=5e-14,
-        )
-        max_iter = int(1e5)
-        u, c, objective_values_particle, supports_particle, times_particle, success = (
-            exp_particle.solve(max_iters=max_iter, mode="exponential", do_logging=False)
-        )
+        success = False
+        while not success:
+            logging.info(f"Running Particle descent (trial {i+1})")
+            exp_particle, true_function = define_particle_descent_experiment()
+            (
+                u,
+                c,
+                objective_values_particle,
+                supports_particle,
+                times_particle,
+                success,
+            ) = exp_particle.solve(
+                max_time=frame_size, mode="exponential", do_logging=False
+            )
         local_residuals = adapt_time(
             times_particle,
             [obj - optimum for obj in objective_values_particle],
             frame=frame_size,
             resolution=resolution,
         )
+        if local_residuals[-1] < 1e-5:
+            particle_residuals_filtered.append(local_residuals)
+            particle_converged += 1
         particle_residuals.append(local_residuals)
         particle_supports.append(supports_particle)
         del exp_particle
-        gc.collect()
+    logging.info(
+        f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
+    )
 
-    particle_residuals_filtered = []
-    converged_frac = 0
-    for i in range(len(particle_residuals)):
-        if particle_residuals[i][-1] < 1e-5:
-            particle_residuals_filtered.append(particle_residuals[i])
-            converged_frac += 1 / Nrun
-
-    if converged_frac > 1.9 / Nrun:
+    if particle_converged >= 2:
         particle_residuals_mean = np.mean(
             bring_to_same_length(particle_residuals_filtered), axis=0
         )
@@ -443,7 +502,6 @@ def create_plots(Nrun: int = 10):
 
     particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
     particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
-    logging.info(f"Particle descent converged in {converged_frac*100}% of cases.")
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 
@@ -453,9 +511,10 @@ def create_plots(Nrun: int = 10):
     styles = ["-", "--", ":"]
     colors = ["b", "g", "r"]
     for array, name, style, color in zip(
-        [residuals_det_nlgcg, nlgcg_residuals_mean, particle_residuals_mean, colors],
+        [residuals_det_nlgcg, nlgcg_residuals_mean, particle_residuals_mean],
         names,
         styles,
+        colors,
     ):
         ax.semilogy(
             resolution * np.arange(len(array)), array, style, label=name, color=color

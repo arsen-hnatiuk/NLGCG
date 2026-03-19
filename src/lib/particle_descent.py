@@ -125,7 +125,7 @@ class ParticleDescent:
 
     def solve(
         self,
-        max_iters: int = 1000,
+        max_iters: int = 1000000,
         max_time: float = 1e6,
         u_0: Measure = Measure(),
         c_0: float = 0,
@@ -217,6 +217,8 @@ class ParticleDescent:
                 c = np.sum(np.sign(cs) * cs**2) / Nparticle
                 u = Measure(matrix=parameterize(r, theta))
                 obj = self.j(u, c)
+                if np.isnan(obj):
+                    obj = np.inf
 
                 if self.do_linesearch:
                     # # Konstantin's version
@@ -312,7 +314,6 @@ class ParticleDescent:
                 logging.info(f"Divergence: {obj}, {np.max(objective_values[-101:-1])}")
                 success = False
                 break
-
             if (it + 1) % 1000 == 0 and do_logging:
                 logging.info(
                     f"{it + 1}: supp: {Nparticle}, c value: {c:.3E}, a value: {self.a_parameter:.3E}, objective {obj:.14E}"
@@ -324,7 +325,7 @@ class ParticleDescent:
                 logging.info("Max iterations reached")
 
         logging.info(
-            f"CPG exited after {times[-1]:.3E} seconds with sparsity {len(u.support)} to objective value {objective_values[-1]:.14E}"
+            f"CPG exited after {times[-1]:.3E} seconds with sparsity {len(u.support)} and success {success} to objective value {objective_values[-1]:.14E}"
         )
 
         return u, c, objective_values, supports, times, success
