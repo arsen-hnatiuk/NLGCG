@@ -370,43 +370,13 @@ def create_plots(Nrun: int = 10):
     resolution = 1  # time resolution for the plots (seconds)
     frame_size = 1000  # Time frame tracked for the residuals (seconds)
 
-    # deterministic NLGCG
-    logging.info("Running deterministic NLGCG")
-    exp_nlgcg, true_function = define_nlgcg_experiment()
-    (
-        u_opt,
-        c_opt,
-        times_det_nlgcg,
-        supports_det_nlgcg,
-        inner_loop,
-        lgcg_lazy,
-        lgcg_total,
-        objective_values_det_nlgcg,
-        dropped_tot,
-        epsilons,
-    ) = exp_nlgcg.solve(
-        tol=5e-14,
-        max_radius=max_radius,
-        temperature=0.1,
-        mode="deterministic",
-        do_logging=False,
-    )
-    residuals_det_nlgcg = adapt_time(
-        times_det_nlgcg,
-        [obj - optimum for obj in objective_values_det_nlgcg],
-        frame=frame_size,
-        resolution=resolution,
-    )
-    del exp_nlgcg
-    gc.collect()
-
-    # NLGCG stochastic
+    # NLGCG
     nlgcg_residuals = []
     nlgcg_residuals_filtered = []
     nlgcg_supports = []
     nlgcg_converged = 0
     for i in range(Nrun):
-        logging.info(f"Running stochastic NLGCG (trial {i+1})")
+        logging.info(f"Running NLGCG (trial {i+1})")
         exp_nlgcg, true_function = define_nlgcg_experiment()
         (
             u_nlgcg,
@@ -507,11 +477,11 @@ def create_plots(Nrun: int = 10):
 
     # Plot residuals
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "RNLGCG", "Particle Descent"]
-    styles = ["-", "--", ":"]
-    colors = ["b", "g", "r"]
+    names = ["NLGCG", "Particle Descent"]
+    styles = ["-", "--"]
+    colors = ["b", "o"]
     for array, name, style, color in zip(
-        [residuals_det_nlgcg, nlgcg_residuals_mean, particle_residuals_mean],
+        [nlgcg_residuals_mean, particle_residuals_mean],
         names,
         styles,
         colors,
@@ -534,7 +504,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(particle_residuals_std)[::-1],
             )
         ),
-        "red",
+        "orange",
         alpha=0.3,
     )
     ax.fill(
@@ -551,7 +521,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_residuals_std)[::-1],
             )
         ),
-        "green",
+        "blue",
         alpha=0.3,
     )
 
@@ -565,11 +535,10 @@ def create_plots(Nrun: int = 10):
 
     # Plot supports
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "RNLGCG", "Particle Descent"]
-    styles = ["-", "-.", "--", ":"]
+    names = ["NLGCG", "Particle Descent"]
+    styles = ["-", "--"]
     for array, name, style, color in zip(
         [
-            supports_det_nlgcg,
             nlgcg_supports_mean,
             particle_supports_mean,
         ],
@@ -593,7 +562,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(particle_supports_std)[::-1],
             )
         ),
-        "red",
+        "orange",
         alpha=0.3,
     )
     ax.fill(
@@ -610,7 +579,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_supports_std)[::-1],
             )
         ),
-        "green",
+        "blue",
         alpha=0.3,
     )
     plt.ylabel("Support points")

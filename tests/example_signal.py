@@ -366,35 +366,6 @@ def create_plots(Nrun: int = 10):
     resolution = 0.1  # time resolution for the plots (seconds)
     frame_size = 100  # Time frame tracked for the residuals (seconds)
 
-    # deterministic NLGCG
-    logging.info("Running deterministic NLGCG")
-    exp_nlgcg, p = define_nlgcg_experiment()
-    (
-        u_opt,
-        c_opt,
-        times_det_nlgcg,
-        supports_det_nlgcg,
-        inner_loop,
-        lgcg_lazy,
-        lgcg_total,
-        objective_values_det_nlgcg,
-        dropped_tot,
-        epsilons,
-    ) = exp_nlgcg.solve(
-        tol=5e-14,
-        max_radius=max_radius,
-        temperature=0.1,
-        mode="deterministic",
-        do_logging=False,
-    )
-    residuals_det_nlgcg = adapt_time(
-        times_det_nlgcg,
-        [obj - optimum for obj in objective_values_det_nlgcg],
-        frame=1000,
-        resolution=resolution,
-    )
-    del exp_nlgcg
-
     # Adaptive refinement
     logging.info("Running adaptive refinement")
     exp_adaptive = define_adaptive_refinement_experiment()
@@ -416,17 +387,17 @@ def create_plots(Nrun: int = 10):
     )
     del exp_adaptive
 
-    # NLGCG stochastic
+    # NLGCG
     nlgcg_residuals = []
     nlgcg_residuals_filtered = []
     nlgcg_supports = []
     nlgcg_converged = 0
     for i in range(Nrun):
-        logging.info(f"Running stochastic NLGCG (trial {i+1})")
+        logging.info(f"Running NLGCG (trial {i+1})")
         exp_nlgcg, p = define_nlgcg_experiment()
         (
-            u_nlgcg,
-            c_nlgcg,
+            u_opt,
+            c_opt,
             times_nlgcg,
             supports_nlgcg,
             inner_loop,
@@ -523,14 +494,13 @@ def create_plots(Nrun: int = 10):
 
     # Plot residuals
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "Adaptive Refinement", "RNLGCG", "Particle Descent"]
-    styles = ["-", "-.", "--", ":"]
+    names = ["NLGCG", "Particle Descent", "Adaptive Refinement"]
+    styles = ["-", "--", ":"]
     for array, name, style in zip(
         [
-            residuals_det_nlgcg,
-            residuals_adaptive,
             nlgcg_residuals_mean,
             particle_residuals_mean,
+            residuals_adaptive,
         ],
         names,
         styles,
@@ -551,7 +521,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(particle_residuals_std)[::-1],
             )
         ),
-        "red",
+        "orange",
         alpha=0.3,
     )
     ax.fill(
@@ -568,7 +538,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_residuals_std)[::-1],
             )
         ),
-        "green",
+        "blue",
         alpha=0.3,
     )
 
@@ -582,14 +552,13 @@ def create_plots(Nrun: int = 10):
 
     # Plot supports
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "Adaptive Refinement", "RNLGCG", "Particle Descent"]
-    styles = ["-", "-.", "--", ":"]
+    names = ["NLGCG", "Particle Descent", "Adaptive Refinement"]
+    styles = ["-", "--", ":"]
     for array, name, style in zip(
         [
-            supports_det_nlgcg,
-            supports_adaptive,
             nlgcg_supports_mean,
             particle_supports_mean,
+            supports_adaptive,
         ],
         names,
         styles,
@@ -610,7 +579,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(particle_supports_std)[::-1],
             )
         ),
-        "red",
+        "orange",
         alpha=0.3,
     )
     ax.fill(
@@ -627,7 +596,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_supports_std)[::-1],
             )
         ),
-        "green",
+        "blue",
         alpha=0.3,
     )
     plt.ylabel("Support points")
@@ -640,11 +609,9 @@ def create_plots(Nrun: int = 10):
 
     # Plot number of coefficients to optimize
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "Adaptive Refinement", "RNLGCG"]
-    styles = ["-", "-.", "--"]
-    for array, name, style in zip(
-        [supports_det_nlgcg, actives, nlgcg_supports_mean], names, styles
-    ):
+    names = ["NLGCG", "Adaptive Refinement"]
+    styles = ["-", ":"]
+    for array, name, style in zip([nlgcg_supports_mean, actives], names, styles):
         ax.semilogx(np.arange(len(array)), array, style, label=name)
 
     ax.fill(
@@ -661,7 +628,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_supports_std)[::-1],
             )
         ),
-        "green",
+        "blue",
         alpha=0.3,
     )
     plt.ylabel("Number of coefficients to optimize")
