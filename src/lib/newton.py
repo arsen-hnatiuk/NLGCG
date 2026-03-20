@@ -2,10 +2,12 @@
 
 import numpy as np
 import logging
-import jax
 from typing import Callable
+import jax
+import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
+_ = jnp.zeros(0)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -19,20 +21,15 @@ class Newton:
         Omega: np.ndarray,
         alpha: float,
         j_N: Callable,
-        j_N_: Callable,
         f_N: Callable,  # Parameterized diligence function
         grad_f_N: Callable,
         grad_j_N: Callable,
-        hess_j_N: Callable,
-        grad_f_N_non_reg: Callable,  # gradient of non-regularized variables
         max_inner_loop: int = 10,
         quasi_newton_storage: int = 5,
         lbfgs_c_0: float = 1e-4,
         wolfe_powell_constant: float = 0.9,
         tr_lambda: float = 1.0,
         cg_iterations: int = 100,
-        newton_p: float = 1e-1,
-        descent_constant: float = 1e-6,
         beta: float = 0.5,
         armijo_constant: float = 1e-4,
         delta_min: float = 1e-8,
@@ -41,12 +38,9 @@ class Newton:
         self.Omega = Omega
         self.alpha = alpha
         self.j_N = j_N
-        self.j_N_ = j_N_
         self.f_N = f_N
         self.grad_f_N = grad_f_N
         self.grad_j_N = grad_j_N
-        self.hess_j_N = hess_j_N
-        self.grad_f_N_non_reg = grad_f_N_non_reg
         self.max_inner_loop = max_inner_loop
         self.quasi_newton_storage = quasi_newton_storage
         self.lbfgs_c_0 = lbfgs_c_0
@@ -57,18 +51,12 @@ class Newton:
         self.cg_iterations = cg_iterations
         self.beta = beta  # For Armijo rule
         self.armijo_constant = armijo_constant  # For Armijo rule
-        self.newton_p = 2 + newton_p  # For Newton step acceptance condition
-        self.descent_constant = descent_constant  # For Newton step acceptance condition
         self.delta_min = delta_min
         self.machine_precision = 5e-14
-        if mode == "globalized_newton":
-            self.solve = self.globalized_newton
-        elif mode == "globalized_lbfgs":
+        if mode == "globalized_lbfgs":
             self.solve = self.globalized_lbfgs
         elif mode == "trust_region":
             self.solve = self.trust_region
-        elif mode == "trust_region_non_reg":
-            self.solve = self.trust_region_non_reg
         elif mode == "trust_region_ssn":
             self.solve = self.trust_region_ssn
 
@@ -100,119 +88,6 @@ class Newton:
                 j_N_new = j_N_init + 1
         return full_parameters_new, sigma
 
-    def domain_and_descent_tests(
-        self,
-        full_parameters: np.ndarray,
-        full_parameters_new: np.ndarray,
-        local_M: float,
-        choice: str,
-    ) -> list:
-        parameters = full_parameters[:-1].reshape(-1, self.Omega.shape[0] + 1)
-        parameters_new = full_parameters_new[:-1].reshape(-1, self.Omega.shape[0] + 1)
-        output_bools = []
-        points_new = parameters_new[:, 1:]
-        coefs_new = parameters_new[:, 0].flatten()
-        coefs = parameters[:, 0].flatten()
-
-        # Domain test
-        if any(points_new[:, 0] <= 0):
-            # Nonpositive variance
-            output_bools.append(False)
-        else:
-            output_bools.append(True)
-
-        # M test
-        output_bools.append(bool(np.linalg.norm(coefs_new, ord=1) <= local_M))
-
-        # Sign test
-        bad_signs = np.where(np.sign(coefs_new) != np.sign(coefs))[0]
-        if not len(bad_signs):
-            output_bools.append(True)
-        else:
-            output_bools.append(False)
-
-        # Absolute descent test
-        j_N_diff = self.j_N(full_parameters_new) - self.j_N(full_parameters)
-        if choice == "Grad" and j_N_diff >= -self.machine_precision:
-            output_bools.append(False)
-        elif j_N_diff >= 0:
-            output_bools.append(False)
-        else:
-            output_bools.append(True)
-
-        return output_bools
-
-    # def stationarity_descent_test(
-    #     self, parameters: np.ndarray, c: float, epsilon: float, radii: list
-    # ) -> tuple:
-    #     full_parameters = np.hstack((parameters.flatten(), np.array([c])))
-    #     grad_j_N_z = self.grad_j_N(full_parameters)
-    #     constant_part = np.abs(grad_j_N_z[-1] * c)
-    #     grad_norm = np.linalg.norm(grad_j_N_z)
-    #     grad_j_N_z_matrix = grad_j_N_z[:-1].reshape(parameters.shape)
-    #     grad_points_matrix = grad_j_N_z_matrix[:, 1:]
-    #     points_part = 0
-    #     for i, radius in enumerate(radii):
-    #         points_part += radius * np.linalg.norm(grad_points_matrix[i])
-    #     grad_coefs = grad_j_N_z_matrix[:, 0].flatten()
-    #     coefs = parameters[:, 0].flatten()
-    #     gap = (
-    #         points_part
-    #         + self.M * abs(min(0, np.min(np.multiply(grad_coefs, np.sign(coefs)))))
-    #         + grad_coefs @ coefs
-    #         + constant_part
-    #     )
-    #     if epsilon <= self.C_raw:
-    #         ineq = gap >= 0.5 * epsilon**2 / (self.C_raw * self.M**2)
-    #     else:
-    #         ineq = gap >= (2 * epsilon - self.C_raw * self.M**2) / 2
-    #     return ineq, grad_norm
-
-    def globalized_newton(
-        self, k: int, params: np.ndarray, support: float
-    ) -> np.ndarray:
-        # Geiger/Kanzow
-        for s in range(self.max_inner_loop):
-            local_M = float(self.j_N(params) / self.alpha)
-            grad = self.grad_j_N(params)
-            hess = self.hess_j_N(params)
-            try:
-                update_direction = np.linalg.solve(hess, -grad)
-                update_norm = np.linalg.norm(update_direction)
-                grad_direction = -np.matmul(grad, update_direction)
-                condition = grad_direction >= self.descent_constant * np.power(
-                    update_norm, self.newton_p
-                )
-                if not np.any(condition):
-                    raise np.linalg.LinAlgError(
-                        "Insufficient descent in Newton direction"
-                    )
-                choice = "Newt"
-            except np.linalg.LinAlgError:
-                update_direction = -grad.copy()
-                choice = "Grad"
-            if any(np.isnan(update_direction)):
-                return params
-            params_new, sigma = self.armijo(params, update_direction, grad, choice)
-
-            # Check validity of the newton step
-            domain_tests = self.domain_and_descent_tests(
-                params,
-                params_new,
-                local_M,
-                choice,
-            )
-            logging.info(
-                f"{k}, {s}: Globalized Newton. choice: {choice}, support: {support}, sigma: {sigma:.2E}, objective: {self.j_N(params_new):.14E}"
-            )
-            if not all(domain_tests):
-                logging.info(f"Domain tests: {domain_tests}")
-                if not domain_tests[-1]:
-                    logging.info(f"grad_norm: {np.linalg.norm(grad):.3E}")
-                return params
-            params = params_new.copy()
-        return params
-
     def q_function(self, s: np.ndarray, y: np.ndarray) -> float:
         norm_s = s @ s
         norm_y = y @ y
@@ -223,7 +98,7 @@ class Newton:
             return 0
 
     def globalized_lbfgs(
-        self, k: int, params: np.ndarray, support: float
+        self, k: int, params: np.ndarray, support: float, do_logging: bool
     ) -> np.ndarray:
         # https://arxiv.org/pdf/2401.03805
 
@@ -276,9 +151,10 @@ class Newton:
                 not np.abs(new_grad_direction)
                 <= -self.wolfe_powell_constant * grad_direction
             ):
-                logging.info(
-                    f"WP: {new_grad_direction >= self.wolfe_powell_constant*grad_direction}, strong WP: {np.abs(new_grad_direction)/grad_direction}"
-                )
+                if do_logging:
+                    logging.info(
+                        f"WP: {new_grad_direction >= self.wolfe_powell_constant*grad_direction}, strong WP: {np.abs(new_grad_direction)/grad_direction}"
+                    )
 
             if scalar_product > 0:
                 if len(storage) == self.quasi_newton_storage:
@@ -294,9 +170,10 @@ class Newton:
                 gamma_minus = 0
                 gamma_plus = np.inf
 
-            logging.info(
-                f"{k}, {s_iter}: Globalized LBFGS. choice: {choice}, support: {support}, sigma: {sigma:.2E}, grad: {grad_norm:.2E}, objective: {self.j_N(params_new):.14E}"
-            )
+            if do_logging:
+                logging.info(
+                    f"{k}, {s_iter}: Globalized LBFGS. choice: {choice}, support: {support}, sigma: {sigma:.2E}, grad: {grad_norm:.2E}, objective: {self.j_N(params_new):.14E}"
+                )
             params = params_new.copy()
             grad = grad_new.copy()
 
@@ -304,14 +181,12 @@ class Newton:
 
     def steihaug_cg(
         self,
-        params_reg: np.ndarray,
         params: np.ndarray,
         hess_grad: np.ndarray,
         grad: np.ndarray,
         eps: float,
         delta: float,
         m: Callable,
-        mode: str,
     ) -> tuple:
         r = grad
         r_r = float(r @ r)
@@ -351,25 +226,15 @@ class Newton:
             r = r_plus.copy()
             r_r = r_plus_r_plus
             p = p_plus.copy()
-            if mode == "non_reg":
-                S_p = jax.jvp(
-                    self.grad_f_N_non_reg,
-                    (params_reg, params),
-                    (np.zeros_like(params_reg), p),
-                )[1]
-            else:
-                S_p = jax.jvp(
-                    self.grad_j_N,
-                    (params,),
-                    (p,),
-                )[1]
+            S_p = jax.jvp(
+                self.grad_j_N,
+                (params,),
+                (p,),
+            )[1]
         return q, i + 1, np.sqrt(r_r)
 
     def trust_region(
-        self,
-        k: int,
-        params: np.ndarray,
-        support: float,
+        self, k: int, params: np.ndarray, support: float, do_logging: bool
     ) -> np.ndarray:
         # Nocedal/Wright: Numerical Optimization Sect. 7.1
         grad = self.grad_j_N(params)
@@ -401,14 +266,12 @@ class Newton:
                 min((np.sqrt(grad_norm), 0.01)) * grad_norm, self.machine_precision
             )
             dir, steihaug_iters, r_norm = self.steihaug_cg(
-                params_reg=np.zeros_like(params),
                 params=params,
                 hess_grad=hess_grad,
                 grad=grad,
                 eps=eps,
                 delta=delta,
                 m=m,
-                mode="full",
             )
 
             params_plus = params + dir
@@ -438,97 +301,11 @@ class Newton:
                 j_params = j_params_plus
 
             del params_plus, grad_plus, grad_norm_plus, j_params_plus
-            logging.info(
-                f"{k}, {s_iter}: Trust Region. choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, grad: {grad_norm:.2E}, objective {self.j_N(params):.14E}"
-            )
+            if do_logging:
+                logging.info(
+                    f"{k}, {s_iter}: Trust Region. choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, grad: {grad_norm:.2E}, objective {self.j_N(params):.14E}"
+                )
         return params
-
-    def trust_region_non_reg(
-        self,
-        k: int,
-        params: np.ndarray,
-        support: float,
-    ) -> np.ndarray:
-        params_non_reg_ = params[:-1].reshape(-1, self.Omega.shape[0] + 1)
-        params_reg = params_non_reg_[:, 0].flatten()
-        params_non_reg = np.hstack((params_non_reg_[:, 1:].flatten(), params[-1]))
-
-        params = params_non_reg.copy()
-        grad = self.grad_f_N_non_reg(params_reg, params)
-        grad_norm = np.linalg.norm(grad)
-        delta = min(0.01, 0.5 * grad_norm)
-        j_params = self.j_N_(params_reg, params)
-
-        for s_iter in range(self.max_inner_loop):
-            if grad_norm < 1e-12:
-                break
-
-            hess_grad = jax.jvp(
-                self.grad_f_N_non_reg,
-                (params_reg, params),
-                (np.zeros_like(params_reg), grad),
-            )[1]
-
-            def m(q: np.ndarray) -> float:
-                hess_q = jax.jvp(
-                    self.grad_f_N_non_reg,
-                    (params_reg, params),
-                    (np.zeros_like(params_reg), q),
-                )[1]
-                quadratic_part = 0.5 * hess_q @ q
-                linear_part = grad @ q
-                return linear_part + quadratic_part
-
-            eps = max(
-                min((np.sqrt(grad_norm), 0.01)) * grad_norm, self.machine_precision
-            )
-            dir, steihaug_iters, r_norm = self.steihaug_cg(
-                params_reg=params_reg,
-                params=params,
-                hess_grad=hess_grad,
-                grad=grad,
-                eps=eps,
-                delta=delta,
-                m=m,
-                mode="non_reg",
-            )
-
-            params_plus = params + dir
-            grad_plus = self.grad_f_N_non_reg(params_reg, params_plus)
-            grad_norm_plus = np.linalg.norm(grad_plus)
-            j_params_plus = self.j_N_(params_reg, params_plus)
-            m_dir = m(dir)
-
-            a_red = j_params - j_params_plus
-            p_red = -m_dir
-            rho = a_red / p_red
-            if np.isnan(rho):
-                rho = 0
-
-            if rho <= 1e-1 or any(np.isnan(grad_plus)):
-                delta = 0.25 * delta
-                choice = "Redc"
-            else:
-                if rho > 0.75 and np.linalg.norm(dir) >= 0.9 * delta:
-                    delta = 2 * delta
-                    choice = "Incr"
-                else:
-                    choice = "Keep"
-                params = params_plus.copy()
-                grad = grad_plus.copy()
-                grad_norm = grad_norm_plus
-                j_params = j_params_plus
-
-            del params_plus, grad_plus, grad_norm_plus, j_params_plus
-            logging.info(
-                f"{k}, {s_iter}: Trust Region non-regularized. choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, grad: {grad_norm:.2E}, objective {self.j_N_(params_reg, params):.14E}"
-            )
-
-        params_non_reg_[:, 1:] = params[:-1].reshape(-1, self.Omega.shape[0]).copy()
-        full_params = np.hstack(
-            (params_non_reg_.flatten(), np.array([params[-1]]))
-        ).copy()
-        return full_params
 
     def H(
         self,
@@ -624,10 +401,7 @@ class Newton:
         return q, i + 1, np.sqrt(r_r)
 
     def trust_region_ssn(
-        self,
-        k: int,
-        params: np.ndarray,
-        support: float,
+        self, k: int, params: np.ndarray, support: float, do_logging: bool
     ) -> np.ndarray:
         # https://arxiv.org/pdf/2106.09340
         Lipschitz = 1
@@ -758,7 +532,8 @@ class Newton:
                     normal_map_norm = normal_map_norm_plus
                     D_diagonal = D_diagonal_plus.copy()
                     H_value = H_value_plus
-            logging.info(
-                f"{k}, {s_iter}: choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, normal_map: {normal_map_norm:.2E}, objective {self.j_N(prox_params):.14E}"
-            )
+            if do_logging:
+                logging.info(
+                    f"{k}, {s_iter}: choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, normal_map: {normal_map_norm:.2E}, objective {self.j_N(prox_params):.14E}"
+                )
         return prox_params
