@@ -42,7 +42,7 @@ observation_resolution = 20
 endpoint = False
 max_radius = (Omega[0][1] - Omega[0][0]) / 100
 true_function = lambda x: np.minimum(1 - np.abs(x[:, 0]), 1 - np.abs(x[:, 1]))
-optimum = 0.0339491910270656
+optimum = 0.0339493125929431
 
 
 def define_experiment():
@@ -128,6 +128,7 @@ def define_experiment():
         return f_N(raw_input) + g(weights)
 
     grad_f_N = jax.jit(jax.grad(f_N))
+    hess_f_N = jax.jit(jax.hessian(f_N))
     grad_j_N = jax.jit(jax.grad(j_N))
 
     return (
@@ -140,6 +141,7 @@ def define_experiment():
         grad_f,
         hess_f,
         grad_f_N,
+        hess_f_N,
         j,
         j_N,
         p,
@@ -162,6 +164,7 @@ def define_nlgcg_experiment(
         grad_f,
         hess_f,
         grad_f_N,
+        hess_f_N,
         j,
         j_N,
         p,
@@ -178,6 +181,7 @@ def define_nlgcg_experiment(
         grad_f=grad_f,
         hess_f=hess_f,
         grad_f_N=grad_f_N,
+        hess_f_N=hess_f_N,
         j=j,
         j_N=j_N,
         p=p,
@@ -206,6 +210,7 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         grad_f,
         hess_f,
         grad_f_N,
+        hess_f_N,
         j,
         j_N,
         p,
@@ -246,6 +251,7 @@ def define_adaptive_refinement_experiment():
         grad_f,
         hess_f,
         grad_f_N,
+        hess_f_N,
         j,
         j_N,
         p,
@@ -312,30 +318,8 @@ def create_plots(Nrun: int = 10):
     resolution = 0.1  # time resolution for the plots (seconds)
     frame_size = 1000  # Time frame tracked for the residuals (seconds)
 
-    # Adaptive refinement
-    logging.info("Running adaptive refinement")
-    exp_adaptive = define_adaptive_refinement_experiment()
-    (
-        cells_dict,
-        vertices_dict,
-        vertices,
-        u,
-        objective_values_adaptive,
-        times_adaptive,
-        actives,
-        supports_adaptive,
-    ) = exp_adaptive.solve(max_time=frame_size, do_logging=False)
-    residuals_adaptive = adapt_time(
-        times_adaptive,
-        [obj - optimum for obj in objective_values_adaptive],
-        frame=frame_size,
-        resolution=resolution,
-    )
-    del exp_adaptive
-
     # NLGCG
     nlgcg_residuals = []
-    nlgcg_residuals_filtered = []
     nlgcg_supports = []
     nlgcg_converged = 0
     for i in range(Nrun):
@@ -353,7 +337,7 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
         ) = exp_nlgcg.solve(
-            tol=5e-14, max_radius=max_radius, temperature=0.1, do_logging=False
+            tol=5e-14, max_radius=max_radius, temperature=1, do_logging=False
         )
         local_residuals = adapt_time(
             times_nlgcg,
@@ -362,29 +346,18 @@ def create_plots(Nrun: int = 10):
             resolution=resolution,
         )
         if local_residuals[-1] < 1e-5:
-            nlgcg_residuals_filtered.append(local_residuals)
             nlgcg_converged += 1
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
         del exp_nlgcg
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
-    if nlgcg_converged >= 2:
-        nlgcg_residuals_mean = np.mean(
-            bring_to_same_length(nlgcg_residuals_filtered), axis=0
-        )
-        nlgcg_residuals_std = np.std(
-            bring_to_same_length(nlgcg_residuals_filtered), axis=0
-        )
-    else:
-        nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
-        nlgcg_residuals_std = np.std(bring_to_same_length(nlgcg_residuals), axis=0)
+    nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
     nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
 
     # Particle Descent Stochastic
     particle_residuals = []
-    particle_residuals_filtered = []
     particle_supports = []
     particle_converged = 0
     for i in range(Nrun):
@@ -409,7 +382,6 @@ def create_plots(Nrun: int = 10):
             resolution=resolution,
         )
         if local_residuals[-1] < 1e-5:
-            particle_residuals_filtered.append(local_residuals)
             particle_converged += 1
         particle_residuals.append(local_residuals)
         particle_supports.append(supports_particle)
@@ -418,23 +390,30 @@ def create_plots(Nrun: int = 10):
         f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
     )
 
-    if particle_converged >= 2:
-        particle_residuals_mean = np.mean(
-            bring_to_same_length(particle_residuals_filtered), axis=0
-        )
-        particle_residuals_std = np.std(
-            bring_to_same_length(particle_residuals_filtered), axis=0
-        )
-    else:
-        particle_residuals_mean = np.mean(
-            bring_to_same_length(particle_residuals), axis=0
-        )
-        particle_residuals_std = np.std(
-            bring_to_same_length(particle_residuals), axis=0
-        )
-
+    particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
     particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
     particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
+
+    # Adaptive refinement
+    logging.info("Running adaptive refinement")
+    exp_adaptive = define_adaptive_refinement_experiment()
+    (
+        cells_dict,
+        vertices_dict,
+        vertices,
+        u,
+        objective_values_adaptive,
+        times_adaptive,
+        actives,
+        supports_adaptive,
+    ) = exp_adaptive.solve(max_time=frame_size, do_logging=False)
+    residuals_adaptive = adapt_time(
+        times_adaptive,
+        [obj - optimum for obj in objective_values_adaptive],
+        frame=frame_size,
+        resolution=resolution,
+    )
+    del exp_adaptive
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 
@@ -452,7 +431,6 @@ def create_plots(Nrun: int = 10):
         styles,
     ):
         ax.semilogy(resolution * np.arange(len(array)), array, style, label=name)
-
     ax.fill(
         np.hstack(
             (
@@ -462,9 +440,8 @@ def create_plots(Nrun: int = 10):
         ),
         np.hstack(
             (
-                np.array(particle_residuals_mean) - np.array(particle_residuals_std),
-                np.array(particle_residuals_mean)[::-1]
-                + np.array(particle_residuals_std)[::-1],
+                np.max(bring_to_same_length(particle_residuals), axis=0),
+                np.min(bring_to_same_length(particle_residuals), axis=0)[::-1],
             )
         ),
         "orange",
@@ -479,18 +456,16 @@ def create_plots(Nrun: int = 10):
         ),
         np.hstack(
             (
-                np.array(nlgcg_residuals_mean) - np.array(nlgcg_residuals_std),
-                np.array(nlgcg_residuals_mean)[::-1]
-                + np.array(nlgcg_residuals_std)[::-1],
+                np.max(bring_to_same_length(nlgcg_residuals), axis=0),
+                np.min(bring_to_same_length(nlgcg_residuals), axis=0)[::-1],
             )
         ),
         "blue",
         alpha=0.3,
     )
-
     plt.ylabel("Objective residual")
     plt.xlabel("Time (s)")
-    plt.ylim(1e-12, 100)
+    plt.ylim(1e-10, 100)
     # plt.xlim(0, 100)
     ax.legend()
     plt.savefig(results_dir / "residuals.png", bbox_inches="tight")
@@ -510,7 +485,6 @@ def create_plots(Nrun: int = 10):
         styles,
     ):
         ax.semilogx(np.arange(len(array)), array, style, label=name)
-
     ax.fill(
         np.hstack(
             (
@@ -547,10 +521,9 @@ def create_plots(Nrun: int = 10):
     )
     plt.ylabel("Support points")
     plt.xlabel("Iterations")
-    # plt.ylim(1e-12, 100)
     # plt.xlim(0, 100)
     ax.legend()
-    plt.savefig(results_dir / "support_size.png", bbox_inches="tight")
+    plt.savefig(results_dir / "supports.png", bbox_inches="tight")
     plt.close()
 
     # Plot number of coefficients to optimize
@@ -559,7 +532,6 @@ def create_plots(Nrun: int = 10):
     styles = ["-", ":"]
     for array, name, style in zip([nlgcg_supports_mean, actives], names, styles):
         ax.semilogx(np.arange(len(array)), array, style, label=name)
-
     ax.fill(
         np.hstack(
             (
@@ -582,7 +554,7 @@ def create_plots(Nrun: int = 10):
     # plt.ylim(1e-12, 100);
     # plt.xlim(0, 100);
     ax.legend()
-    plt.savefig(results_dir / "support_size_2.png", bbox_inches="tight")
+    plt.savefig(results_dir / "coefficients.png", bbox_inches="tight")
     plt.close()
 
     # Plot the function with reconstruction error
@@ -619,9 +591,9 @@ def create_plots(Nrun: int = 10):
         ax2.add_patch(
             plt.Circle((x[1], x[2]), radius=x[0], color=color, fill=False, alpha=0.5)
         )
-        ax3.add_patch(
-            plt.Circle((x[1], x[2]), radius=x[0], color=color, fill=False, alpha=0.5)
-        )
+        # ax3.add_patch(
+        #     plt.Circle((x[1], x[2]), radius=x[0], color=color, fill=False, alpha=0.5)
+        # )
     ax1.set_xlim(omega_space[0][0], omega_space[0][1])
     ax1.set_ylim(omega_space[1][0], omega_space[1][1])
     ax2.set_xlim(omega_space[0][0], omega_space[0][1])

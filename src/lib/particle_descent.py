@@ -58,6 +58,7 @@ class ParticleDescent:
         self.hess_f = hess_f
         self.do_linesearch = do_linesearch
         self.do_pruning = do_pruning
+        self.pred_factor = 0.1  # For line search
 
     def parameterize(
         self, r: np.ndarray, theta: np.ndarray, Nparticle: int = None
@@ -202,8 +203,7 @@ class ParticleDescent:
 
             r_old, cs_old, theta_old = r.copy(), cs.copy(), theta.copy()
             decrease = 1.0
-            decrease_tol = 0.0
-            while decrease > decrease_tol:
+            while decrease > 0:
                 r, cs, theta = self.retraction(
                     r_old,
                     r_update,
@@ -235,14 +235,12 @@ class ParticleDescent:
                     #     + (theta_grad.reshape(-1).dot((theta - theta_old).reshape(-1)))
                     # )
 
-                    pred_factor = 0.9
-                    model = objective_values[-1] - pred_factor * pred
+                    model = objective_values[-1] - self.pred_factor * pred
 
                     decrease = obj - model
-                    ls_fact = 1.0
-                    if decrease >= decrease_tol:
+                    if decrease >= 0:
                         contraction = (
-                            max(self.a_parameter / (1 + ls_fact), min_a_parameter)
+                            max(self.a_parameter / 2, min_a_parameter)
                             / self.a_parameter
                         )
                         self.a_parameter = self.a_parameter * contraction
@@ -255,14 +253,14 @@ class ParticleDescent:
                         if contraction >= 0.99:
                             # exit line-search and accept step
                             logging.warning(
-                                f"line-search failed in iteration {it}: descent is {decrease}, red={objective_values[-1] - obj:1.3e}, pred={pred:1.3e}, "
+                                f"line-search failed in iteration {it}: value - desired value is {decrease}, reduction is {objective_values[-1] - obj:1.3e}, gradient * step size is {pred:1.3e}, "
                             )
                             # breakpoint()
                             decrease = 0
                     else:
                         if decrease < 0.0:
-                            self.a_parameter = self.a_parameter * (1 + 0.25 * ls_fact)
-                            self.b_parameter = self.b_parameter * (1 + 0.25 * ls_fact)
+                            self.a_parameter = self.a_parameter * (1 + 0.25)
+                            self.b_parameter = self.b_parameter * (1 + 0.25)
                 else:
                     # just accept the step, and do not check for descent
                     decrease = -1.0
@@ -299,13 +297,13 @@ class ParticleDescent:
                 logging.info(f"Convergence, gradient: {pred_raw:1.3e}")
                 success = True
                 break
-            elif (
-                np.max(np.abs(obj - np.array(objective_values[-101:])))
-                < self.residual_tolerance
-            ):
-                logging.info("Convergence")
-                success = True
-                break
+            # elif (
+            #     np.max(np.abs(obj - np.array(objective_values[-101:])))
+            #     < self.residual_tolerance
+            # ):
+            #     logging.info("Convergence")
+            #     success = True
+            #     break
             elif (
                 not self.do_linesearch
                 and len(objective_values) > 100

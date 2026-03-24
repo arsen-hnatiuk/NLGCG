@@ -28,6 +28,7 @@ class NLGCG:
         grad_f: Callable,
         hess_f: Callable,
         grad_f_N: Callable,
+        hess_f_N: Callable,
         j: Callable,  # Objective
         j_N: Callable,  # parameterized objective
         p: Callable,  # Dual variable
@@ -57,6 +58,7 @@ class NLGCG:
         self.grad_f = grad_f
         self.hess_f = hess_f
         self.grad_f_N = grad_f_N
+        self.hess_f_N = hess_f_N
         self.Omega = Omega  # Example [[0,1],[1,2]] for [0,1]x[1,2]
         self.max_radius = 1
         self.j = j
@@ -111,6 +113,7 @@ class NLGCG:
         )
         _ = self.f_N(np.ones(self.Omega.shape[0] + 2))
         _ = self.grad_f_N(np.ones(self.Omega.shape[0] + 2))
+        _ = self.hess_f_N(np.ones(self.Omega.shape[0] + 2))
         _ = self.j(self.u_0, self.c_0)
         _ = self.j_N(np.ones(self.Omega.shape[0] + 2))
         _ = self.grad_j_N(np.ones(self.Omega.shape[0] + 2))
@@ -461,8 +464,11 @@ class NLGCG:
 
             t = time.perf_counter()
             full_parameters = np.hstack((parameters.flatten(), c_ks))
-            # e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
-            # logging.info(f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}")
+            if do_logging:
+                e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
+                logging.info(
+                    f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
+                )
 
             if len(u_ks.coefficients):
                 full_parameters_new = self.newton_step(
