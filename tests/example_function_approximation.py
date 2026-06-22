@@ -530,8 +530,11 @@ def create_plots(Nrun: int = 10):
     fig, ax = plt.subplots(figsize=(5, 4))
     names = ["NLGCG", "Adaptive Refinement"]
     styles = ["-", ":"]
-    for array, name, style in zip([nlgcg_supports_mean, actives], names, styles):
-        ax.semilogx(np.arange(len(array)), array, style, label=name)
+    colors = ["tab:blue", "tab:green"]
+    for array, name, style, color in zip(
+        [nlgcg_supports_mean, actives], names, styles, colors
+    ):
+        ax.semilogx(np.arange(len(array)), array, style, label=name, c=color)
     ax.fill(
         np.hstack(
             (
@@ -546,7 +549,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_supports_std)[::-1],
             )
         ),
-        "blue",
+        "tab:blue",
         alpha=0.3,
     )
     plt.ylabel("Number of coefficients to optimize")

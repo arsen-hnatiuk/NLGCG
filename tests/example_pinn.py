@@ -457,7 +457,7 @@ def create_plots(Nrun: int = 10):
     fig, ax = plt.subplots(figsize=(5, 4))
     names = ["NLGCG", "Particle Descent"]
     styles = ["-", "--"]
-    colors = ["blue", "orange"]
+    colors = ["tab:blue", "tab:orange"]
     for array, name, style, color in zip(
         [nlgcg_residuals_mean, particle_residuals_mean],
         names,
@@ -480,7 +480,7 @@ def create_plots(Nrun: int = 10):
                 np.min(bring_to_same_length(particle_residuals), axis=0)[::-1],
             )
         ),
-        "orange",
+        "tab:orange",
         alpha=0.3,
     )
     ax.fill(
@@ -496,7 +496,7 @@ def create_plots(Nrun: int = 10):
                 np.min(bring_to_same_length(nlgcg_residuals), axis=0)[::-1],
             )
         ),
-        "blue",
+        "tab:blue",
         alpha=0.3,
     )
     plt.ylabel("Objective residual")
@@ -535,7 +535,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(particle_supports_std)[::-1],
             )
         ),
-        "orange",
+        "tab:orange",
         alpha=0.3,
     )
     ax.fill(
@@ -552,7 +552,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_supports_std)[::-1],
             )
         ),
-        "blue",
+        "tab:blue",
         alpha=0.3,
     )
     plt.ylabel("Support points")

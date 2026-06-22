@@ -427,7 +427,7 @@ def create_plots(Nrun: int = 10):
                 times_particle,
                 success,
             ) = exp_particle.solve(
-                max_time=frame_size, mode="exponential", do_logging=False
+                max_time=frame_size, mode="uniform", do_logging=False
             )
         local_residuals = adapt_time(
             times_particle,
@@ -584,7 +584,7 @@ def create_plots(Nrun: int = 10):
     fig, ax = plt.subplots(figsize=(5, 4))
     names = ["NLGCG", "Adaptive Refinement"]
     styles = ["-", ":"]
-    colors = ["b", "g"]
+    colors = ["tab:blue", "tab:green"]
     for array, name, style, color in zip(
         [nlgcg_supports_mean, actives], names, styles, colors
     ):
@@ -603,7 +603,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_supports_std)[::-1],
             )
         ),
-        "blue",
+        "tab:blue",
         alpha=0.3,
     )
     plt.ylabel("Number of coefficients to optimize")
