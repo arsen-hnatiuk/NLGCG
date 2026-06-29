@@ -131,7 +131,7 @@ class ParticleDescent:
         u_0: Measure = Measure(),
         c_0: float = 0,
         mode: str = "exponential",
-        do_logging: bool = True,
+        log_results: bool = True,
     ):
         t_0 = time.perf_counter()
         success = True
@@ -152,7 +152,7 @@ class ParticleDescent:
         # Initialize
         u = Measure(matrix=parameterize(r, theta))
         c = np.sum(np.sign(cs) * cs**2) / Nparticle
-        if do_logging:
+        if log_results:
             logging.info(f"0: objective {self.j(u, c):.14E}")
         objective_values = [self.j(u, c)]
         times = [time.perf_counter() - t_0]
@@ -279,7 +279,7 @@ class ParticleDescent:
                 old_obj = obj
                 obj = self.j(u, c)
 
-                if do_logging:
+                if log_results:
                     logging.info(
                         f"dropped indices {np.where(dropped_ind)[0]} with r={r_drop} and theta={theta_drop}, function change {obj - old_obj}"
                     )
@@ -312,7 +312,7 @@ class ParticleDescent:
                 logging.info(f"Divergence: {obj}, {np.max(objective_values[-101:-1])}")
                 success = False
                 break
-            if (it + 1) % 1000 == 0 and do_logging:
+            if (it + 1) % 1000 == 0 and log_results:
                 logging.info(
                     f"{it + 1}: supp: {Nparticle}, c value: {c:.3E}, a value: {self.a_parameter:.3E}, objective {obj:.14E}"
                 )

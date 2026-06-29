@@ -2,9 +2,11 @@ import numpy as np
 import logging
 import time
 import jax
+import matplotlib.pyplot as plt
 import jax.numpy as jnp
 from typing import Callable
 from lib.ssn import SSN
+from lib.ssn_rkhs import SSN_RKHS
 from lib.newton import Newton
 from lib.global_search import GlobalSearch
 from lib.measure import Measure
@@ -20,13 +22,9 @@ logging.basicConfig(
 class NLGCG:
     def __init__(
         self,
-        target: np.ndarray,
-        kernel: Callable,
         g: Callable,  # Penalty function
-        f: Callable,  # Diligence function
         f_N: Callable,  # Parameterized diligence function
-        grad_f: Callable,
-        hess_f: Callable,
+        target: np.ndarray,  # In the case of RKHS, sample from true distribution
         grad_f_N: Callable,
         hess_f_N: Callable,
         j: Callable,  # Objective
@@ -38,13 +36,22 @@ class NLGCG:
         alpha: float,
         Omega: np.ndarray,
         global_search_resolution: int,  # Only for deterministic grid in global search
-        constant_dim: int,
-        kernel_dim: int,
+        max_radius: float = 1.0,
+        kernel: Callable = None,  # Not valid for RKHS
+        f: Callable = None,  # Diligence function, not valid for RKHS
+        grad_f: Callable = None,  # Not valid for RKHS
+        hess_f: Callable = None,  # Not valid for RKHS
+        constant_dim: int = 0,  # Not valid for RKHS
+        kernel_dim: int = 0,  # Not valid for RKHS
         M: float = 1e6,
         C_0: float = 1,
         dual_variable_goodness: float = 0.5,
         ssn_steps: int = 100,
         newton_tolerance: float = 5e-2,  # Tolerance for Newton steps in Global Search
+        experiment_type: float = "Euclidean",  # Else RKHS, no constant c
+        kernel_k: Callable = None,  # Only for KRHS experiment
+        kernel_s: Callable = None,  # Only for RKHS experiment
+        loss_offset: float = 1,  # Only for RKHS experiment
     ) -> None:
         self.target = target
         self.kernel = kernel
@@ -60,7 +67,7 @@ class NLGCG:
         self.grad_f_N = grad_f_N
         self.hess_f_N = hess_f_N
         self.Omega = Omega  # Example [[0,1],[1,2]] for [0,1]x[1,2]
-        self.max_radius = 1
+        self.max_radius = max_radius
         self.j = j
         self.j_N = j_N
         self.u_0 = Measure()
@@ -79,53 +86,69 @@ class NLGCG:
         self.dual_variable_goodness = dual_variable_goodness
         self.ssn_steps = ssn_steps
         self.newton_tolerance = newton_tolerance
+        self.experiment_type = experiment_type
+        if experiment_type == "Euclidean":
+            self.finite_dimensional_step = self.finite_dimensional_step_euclidean
+        else:
+            self.finite_dimensional_step = self.finite_dimensional_step_rkhs
+        self.kernel_k = kernel_k
+        self.kernel_s = kernel_s
+        self.loss_offset = loss_offset
         self.initialize_functions()
 
     def initialize_functions(self):
-        _ = self.kernel(np.ones((1, len(self.Omega))))
+        if self.experiment_type == "Euclidean":
+            full_parameters = np.ones(self.Omega.shape[0] + 2)
+            _ = self.kernel(np.ones((1, len(self.Omega))))
+            _ = self.f(
+                np.hstack(
+                    (
+                        np.ones(self.constant_dim),
+                        np.zeros(self.kernel_dim - self.constant_dim),
+                    )
+                )
+            )
+            _ = self.grad_f(
+                np.hstack(
+                    (
+                        np.ones(self.constant_dim),
+                        np.zeros(self.kernel_dim - self.constant_dim),
+                    )
+                )
+            )
+            _ = self.hess_f(
+                np.hstack(
+                    (
+                        np.ones(self.constant_dim),
+                        np.zeros(self.kernel_dim - self.constant_dim),
+                    )
+                )
+            )
+        else:
+            full_parameters = np.ones(self.Omega.shape[0] + 1)
+            _ = self.kernel_k(
+                np.ones((1, len(self.Omega))), np.ones((1, len(self.Omega)))
+            )
+            _ = self.kernel_s(np.ones((1, len(self.Omega))))
         _ = self.p(self.u_0, self.c_0)(np.ones((1, len(self.Omega))))
         _ = self.grad_p(self.u_0, self.c_0)(np.ones((1, len(self.Omega))))
         _ = self.hess_p(self.u_0, self.c_0)(np.ones((1, len(self.Omega))))
         _ = self.g(np.ones(1))
-        _ = self.f(
-            np.hstack(
-                (
-                    np.ones(self.constant_dim),
-                    np.zeros(self.kernel_dim - self.constant_dim),
-                )
-            )
-        )
-        _ = self.grad_f(
-            np.hstack(
-                (
-                    np.ones(self.constant_dim),
-                    np.zeros(self.kernel_dim - self.constant_dim),
-                )
-            )
-        )
-        _ = self.hess_f(
-            np.hstack(
-                (
-                    np.ones(self.constant_dim),
-                    np.zeros(self.kernel_dim - self.constant_dim),
-                )
-            )
-        )
-        _ = self.f_N(np.ones(self.Omega.shape[0] + 2))
-        _ = self.grad_f_N(np.ones(self.Omega.shape[0] + 2))
-        _ = self.hess_f_N(np.ones(self.Omega.shape[0] + 2))
+        _ = self.f_N(full_parameters)
+        _ = self.grad_f_N(full_parameters)
+        _ = self.hess_f_N(full_parameters)
         _ = self.j(self.u_0, self.c_0)
-        _ = self.j_N(np.ones(self.Omega.shape[0] + 2))
-        _ = self.grad_j_N(np.ones(self.Omega.shape[0] + 2))
+        _ = self.j_N(full_parameters)
+        _ = self.grad_j_N(full_parameters)
 
-    def finite_dimensional_step(
+    def finite_dimensional_step_euclidean(
         self,
         u: Measure,
         c: float,
         Psi: float,
         mode: str = "unconstrained",
         optimization: str = "full",
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> tuple:
         K_support = np.hstack(
             (np.ones(self.constant_dim), np.zeros(self.kernel_dim - self.constant_dim))
@@ -159,7 +182,7 @@ class NLGCG:
             mode=mode,
             maximum_iterations=self.ssn_steps,
         )
-        ssn_solution = ssn.solve(tol=Psi, u_0=u_0, do_logging=do_logging)
+        ssn_solution = ssn.solve(tol=Psi, u_0=u_0, log_results=log_results)
         del ssn
         if mode == "positive":
             ssn_normal = ssn_solution * signs
@@ -201,6 +224,54 @@ class NLGCG:
         u_plus, c_plus = tuples[best_value]
         return u_plus, c_plus
 
+    def finite_dimensional_step_rkhs(
+        self,
+        u: Measure,
+        c: float,
+        Psi: float,
+        mode: str = "unconstrained",
+        optimization: str = "full",
+        log_results: bool = True,
+    ) -> Measure:
+        if not len(u.coefficients):
+            return u, 0
+        support = u.support
+        K_matrix = self.kernel_k(support, support)
+        S_vector = self.kernel_s(support)
+        # diff_support = np.subtract.outer(support, support)
+        # hessian = self.k_tilde_sigma(diff_support)
+        # diff_X = np.subtract.outer(self.X, support)
+        # target_part = self.k_tilde(diff_X)
+        finite_j = (
+            lambda weights: 0.5 * weights.T @ K_matrix @ weights
+            - S_vector @ weights
+            + self.alpha * np.linalg.norm(weights, ord=1)
+            + self.loss_offset
+        )
+        local_p = lambda weights: S_vector - K_matrix @ weights
+        u_0 = u.coefficients.copy()
+        ssn = SSN_RKHS(
+            alpha=self.alpha,
+            M=self.M,
+            g=self.g,
+            p=local_p,
+            hessian=K_matrix,
+            j=finite_j,
+            maximum_iterations=self.ssn_steps,
+            log_results=log_results,
+        )
+        ssn_solution = ssn.solve(tol=Psi, u_0=u_0)
+        del ssn
+        u_plus = Measure(
+            support=u.support[ssn_solution != 0].copy(),
+            coefficients=ssn_solution[ssn_solution != 0].copy(),
+        )
+        candidates = [u_plus, u]
+        values = [self.j(u_, c) for u_ in candidates]
+        best_value = np.argmin(values)
+        u_plus = candidates[best_value].copy()
+        return u_plus, c
+
     def drop_step(self, u: Measure, c: float) -> tuple:
         if not len(u.coefficients):
             return u, False
@@ -231,7 +302,7 @@ class NLGCG:
 
     def local_merging_update_radii(self, u: Measure, c: float) -> tuple:
         if not len(u.coefficients):
-            return np.array([[]]), u, []
+            return np.array([[]]), u, [], []
         radii = self.compute_radii(u, c)
         p_u = self.p(u, c)
         p_norm = lambda x: np.abs(p_u(x))
@@ -251,13 +322,15 @@ class NLGCG:
                 cluster_points.append(point)
                 cluster_coefs.append(np.sum(full_coefs[~merged][cluster_indices]))
                 merged[~merged] |= cluster_indices
+        old_radii = radii.copy()
+        new_radii = radii.copy()
         if len(cluster_coefs) == len(u.coefficients):
             # No merging has happened
-            return u.to_matrix(), u, radii
+            return u.to_matrix(), u, new_radii, old_radii
         else:
             u_plus = Measure(support=cluster_points, coefficients=cluster_coefs)
-            radii = self.compute_radii(u_plus, c)
-            return u_plus.to_matrix(), u_plus, radii
+            new_radii = self.compute_radii(u_plus, c)
+            return u_plus.to_matrix(), u_plus, new_radii, old_radii
 
     def compute_radii(self, u: Measure, c: float) -> list:
         radii = []
@@ -294,7 +367,7 @@ class NLGCG:
         radii: np.ndarray,
         mode: str = "stochastic_adaptive",
         temperature: float = 1.0,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> tuple:
         j_initial = self.j(u, c)
         condition = False
@@ -315,7 +388,7 @@ class NLGCG:
             newton_tolerance=self.newton_tolerance,
         )
         best_val, found_points, global_valid = global_search_object.solve(
-            u, c, epsilon, q_u, p_u, radius, temperature, do_logging
+            u, c, epsilon, q_u, p_u, radius, temperature, log_results
         )
         del global_search_object
         phi = self.M * max(best_val - self.alpha, 0) + q_u
@@ -385,9 +458,9 @@ class NLGCG:
         params: np.ndarray,
         support: int,
         mode: str = "trust_region",
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> np.ndarray:
-        if do_logging:
+        if log_results:
             logging.info(
                 f"{k} Newton: mode:{mode}, support: {support}, initial_objective: {self.j_N(params):.14E}"
             )
@@ -401,7 +474,7 @@ class NLGCG:
             grad_j_N=self.grad_j_N,
         )
         params_new = newton_method.solve(
-            k=k, params=params, support=support, do_logging=do_logging
+            k=k, params=params, support=support, log_results=log_results
         )
         del newton_method
         return params_new
@@ -409,15 +482,13 @@ class NLGCG:
     def solve(
         self,
         tol: float,
-        max_radius: float,
         u_0: Measure = Measure(),
         c_0: float = 0,
         mode: str = "stochastic_adaptive",
         inner_mode: str = "trust_region",
         temperature: float = 1.0,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> tuple:
-        self.max_radius = max_radius
         self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
         self.C_raw = self.C_0
         epsilon = max(1, 0.5 * self.j(u_0, c_0))
@@ -437,6 +508,9 @@ class NLGCG:
         c_plus = c_0
         phi_numerical = tol + 1
         while phi_numerical > tol:
+            # if k > 5:
+            #     break
+
             global_valid = "N/A"
 
             t = time.perf_counter()
@@ -451,35 +525,113 @@ class NLGCG:
                 self.machine_precision,
                 mode="positive",
                 optimization="full",
-                do_logging=do_logging,
+                log_results=log_results,
             )
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
             ssn_1_time = time.perf_counter() - t
 
             t = time.perf_counter()
-            parameters, u_ks, radii = self.local_merging_update_radii(u_coef, c_coef)
+            parameters, u_ks, radii, old_radii = self.local_merging_update_radii(
+                u_coef, c_coef
+            )
             c_ks = c_coef
             u_lm, c_lm = u_ks.copy(), c_ks
             radii_time = time.perf_counter() - t
 
             t = time.perf_counter()
-            full_parameters = np.hstack((parameters.flatten(), c_ks))
-            if do_logging:
+            if self.experiment_type == "Euclidean":
+                full_parameters = np.hstack((parameters.flatten(), c_ks))
+            else:
+                full_parameters = parameters.flatten()
+            if log_results and len(full_parameters):
                 e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
                 logging.info(
                     f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
                 )
 
             if len(u_ks.coefficients):
+                # # Plot the true and predicted sources
+                # fig, ax = plt.subplots(figsize=(5, 4))
+                # for i, x in enumerate(u_coef.support):
+                #     ax.add_patch(
+                #         plt.Circle(
+                #             (x[0], x[1]),
+                #             radius=max(0.5, old_radii[i]),
+                #             color="blue",
+                #             fill=False,
+                #             alpha=0.5,
+                #         )
+                #     )
+                #     plt.plot([x[0]], [x[1]], "o", c="b", markersize=2)
+                # for i, x in enumerate(u_ks.support):
+                #     plt.plot([x[0]], [x[1]], "o", c="r", markersize=2)
+                # ax.set_xlim(self.Omega[0][0], self.Omega[0][1])
+                # ax.set_ylim(self.Omega[1][0], self.Omega[1][1])
+                # ax.set_xlabel("True and predicted sources")
+                # plt.show()
+                # if len(u_ks.support) > 1:
+                #     for i, x in enumerate(u_ks.support):
+                #         if (
+                #             np.min(
+                #                 np.linalg.norm(
+                #                     u_ks.support[
+                #                         np.array(
+                #                             [
+                #                                 _
+                #                                 for _ in range(len(u_ks.coefficients))
+                #                                 if _ != i
+                #                             ]
+                #                         )
+                #                     ]
+                #                     - x,
+                #                     axis=1,
+                #                 )
+                #             )
+                #             < 1
+                #         ):
+                #             # Plot dual variable
+                #             p_coef = self.p(u_coef, c_coef)
+                #             P = lambda x: np.abs(p_coef(x))
+                #             fig, ax = plt.subplots(figsize=(5, 4))
+                #             a = np.linspace(x[0] - 1, x[0] + 1, 100)
+                #             b = np.linspace(x[1] - 1, x[1] + 1, 100)
+                #             B, D = np.meshgrid(a, b)
+                #             vals = np.array(
+                #                 [
+                #                     P(np.array([[x_1, x_2]]))
+                #                     for x_1, x_2 in zip(B.flatten(), D.flatten())
+                #                 ]
+                #             ).reshape((len(a), len(a)))
+                #             cb = ax.contourf(B, D, vals, levels=100)
+                #             fig.colorbar(cb, ax=ax)
+                #             for i, x in enumerate(u_coef.support):
+                #                 ax.add_patch(
+                #                     plt.Circle(
+                #                         (x[0], x[1]),
+                #                         radius=old_radii[i],
+                #                         color="r",
+                #                         fill=False,
+                #                         alpha=0.5,
+                #                     )
+                #                 )
+                #                 # plt.plot([x[0]], [x[1]], "o", c="r", markersize=2)
+                #             ax.set_xlim(x[0] - 1, x[0] + 1)
+                #             ax.set_ylim(x[1] - 1, x[1] + 1)
+                #             plt.show()
+                #             break
                 full_parameters_new = self.newton_step(
                     k=k,
                     params=full_parameters,
                     support=len(u_ks.support),
                     mode=inner_mode,
-                    do_logging=do_logging,
+                    log_results=log_results,
                 )
-                parameters = full_parameters_new[:-1].reshape(parameters.shape)
-                c_ks = full_parameters_new[-1]
+                if self.experiment_type == "Euclidean":
+                    parameters = full_parameters_new[:-1].reshape(parameters.shape)
+                    c_ks = full_parameters_new[-1]
+                else:
+                    parameters = full_parameters_new.reshape(parameters.shape)
+                    c_ks = 0
                 u_ks = Measure(matrix=parameters)
 
             newton_time = time.perf_counter() - t
@@ -498,7 +650,7 @@ class NLGCG:
                 self.machine_precision,
                 mode="positive",
                 optimization="full",
-                do_logging=do_logging,
+                log_results=log_results,
             )
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
@@ -506,19 +658,46 @@ class NLGCG:
 
             t = time.perf_counter()
             u_plus, epsilon, global_valid, phi_numerical = self.lgcg_step(
-                p_u, u, c, epsilon, q_u, radii, mode, temperature, do_logging
+                p_u, u, c, epsilon, q_u, radii, mode, temperature, log_results
             )
             c_plus = c
             lgcg_lazy += int(global_valid)
             lgcg_total += 1
             lgcg_time = time.perf_counter() - t
 
+            # # Plot dual variable
+            # P = lambda x: np.abs(p_u(x))
+            # a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
+            # B, D = np.meshgrid(a, a)
+            # vals = np.array(
+            #     [
+            #         P(np.array([[x_1, x_2]]))
+            #         for x_1, x_2 in zip(B.flatten(), D.flatten())
+            #     ]
+            # ).reshape((len(a), len(a)))
+            # plt.contourf(B, D, vals, levels=100)
+            # plt.colorbar()
+            # # for i, x in enumerate(true_sources):
+            # #     if i:
+            # #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
+            # #     else:
+            # #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
+            # # for i, x in enumerate(u_tilde.support):
+            # #     if i:
+            # #         plt.plot([x[0]], [x[1]], "o", c="b")
+            # #     else:
+            # #         plt.plot([x[0]], [x[1]], "o", c="b", label="Optimal support")
+            # # plt.legend()
+            # # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
+            # # plt.close()
+            # plt.show()
+
             times.append(time.perf_counter() - initial_time)
             supports.append(len(u.support))
             inner_loop.append(0)
             objective_values.append(self.j(u, c))
             epsilons.append(epsilon)
-            if do_logging:
+            if log_results:
                 logging.info(
                     f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {phi_numerical:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.14E}"
                 )

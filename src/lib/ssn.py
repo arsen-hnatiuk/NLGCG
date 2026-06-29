@@ -129,7 +129,7 @@ class SSN:
             q[-1] = self.alpha + 1  # Last element is not regularized
         return np.diag(np.where(q > self.alpha, 1, 0))
 
-    def solve(self, tol: float, u_0: np.ndarray, do_logging: bool) -> np.ndarray:
+    def solve(self, tol: float, u_0: np.ndarray, log_results: bool) -> np.ndarray:
         # Semismooth Newton method (globalized via line search)
         if not all(self.K.shape):
             logging.debug("Empty input space, retuning u_0")
@@ -174,7 +174,7 @@ class SSN:
             psi_val = self.Psi(prox_q)
             k += 1
 
-        if do_logging:
+        if log_results:
             logging.info(
                 f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
             )

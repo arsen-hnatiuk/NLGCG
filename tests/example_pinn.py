@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
 import numpy as np
 import os
 import jax
@@ -394,7 +391,7 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
         ) = exp_nlgcg.solve(
-            tol=5e-14, max_radius=max_radius, temperature=1, do_logging=False
+            tol=5e-14, max_radius=max_radius, temperature=1, log_results=False
         )
         local_residuals = adapt_time(
             times_nlgcg,
@@ -430,7 +427,7 @@ def create_plots(Nrun: int = 10):
                 times_particle,
                 success,
             ) = exp_particle.solve(
-                max_time=frame_size, mode="exponential", do_logging=False
+                max_time=frame_size, mode="exponential", log_results=False
             )
         local_residuals = adapt_time(
             times_particle,

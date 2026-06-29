@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
 import numpy as np
 import os
 import jax
@@ -337,7 +334,7 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
         ) = exp_nlgcg.solve(
-            tol=5e-14, max_radius=max_radius, temperature=1, do_logging=False
+            tol=5e-14, max_radius=max_radius, temperature=1, log_results=False
         )
         local_residuals = adapt_time(
             times_nlgcg,
@@ -373,7 +370,7 @@ def create_plots(Nrun: int = 10):
                 times_particle,
                 success,
             ) = exp_particle.solve(
-                max_time=frame_size, mode="exponential", do_logging=False
+                max_time=frame_size, mode="exponential", log_results=False
             )
         local_residuals = adapt_time(
             times_particle,
@@ -406,7 +403,7 @@ def create_plots(Nrun: int = 10):
         times_adaptive,
         actives,
         supports_adaptive,
-    ) = exp_adaptive.solve(max_time=frame_size, do_logging=False)
+    ) = exp_adaptive.solve(max_time=frame_size, log_results=False)
     residuals_adaptive = adapt_time(
         times_adaptive,
         [obj - optimum for obj in objective_values_adaptive],
@@ -444,7 +441,7 @@ def create_plots(Nrun: int = 10):
                 np.min(bring_to_same_length(particle_residuals), axis=0)[::-1],
             )
         ),
-        "orange",
+        "tab:orange",
         alpha=0.3,
     )
     ax.fill(
@@ -460,7 +457,7 @@ def create_plots(Nrun: int = 10):
                 np.min(bring_to_same_length(nlgcg_residuals), axis=0)[::-1],
             )
         ),
-        "blue",
+        "tab:blue",
         alpha=0.3,
     )
     plt.ylabel("Objective residual")
@@ -499,7 +496,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(particle_supports_std)[::-1],
             )
         ),
-        "orange",
+        "tab:orange",
         alpha=0.3,
     )
     ax.fill(
@@ -516,7 +513,7 @@ def create_plots(Nrun: int = 10):
                 + np.array(nlgcg_supports_std)[::-1],
             )
         ),
-        "blue",
+        "tab:blue",
         alpha=0.3,
     )
     plt.ylabel("Support points")
