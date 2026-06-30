@@ -390,6 +390,7 @@ def create_plots(Nrun: int = 10):
             objective_values_nlgcg,
             dropped_tot,
             epsilons,
+            all_information,
         ) = exp_nlgcg.solve(
             tol=5e-14, max_radius=max_radius, temperature=1, log_results=False
         )

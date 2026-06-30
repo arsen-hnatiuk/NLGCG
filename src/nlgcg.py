@@ -333,13 +333,20 @@ class NLGCG:
             return u_plus.to_matrix(), u_plus, new_radii, old_radii
 
     def compute_radii(self, u: Measure, c: float) -> list:
+        # grad_time = 0
+        # hess_time = 0
+        # t_0 = time.perf_counter()
         radii = []
         if not len(u.coefficients):
             return radii
+        # t = time.perf_counter()
         grad_p = self.grad_p(u, c)
-        hess_p = self.hess_p(u, c)
         grads = grad_p(u.support)
+        # grad_time += time.perf_counter() - t
+        # t = time.perf_counter()
+        hess_p = self.hess_p(u, c)
         hesses = hess_p(u.support)
+        # hess_time += time.perf_counter() - t
         for point_grad, point_hess in zip(grads, hesses):
             grad_norm = np.linalg.norm(point_grad)
             try:
@@ -354,6 +361,8 @@ class NLGCG:
             except np.linalg.LinAlgError:
                 # If the Hessian contains nan, we cannot compute a radius
                 radii.append(self.max_radius)
+        # all_time = time.perf_counter() - t_0
+        # logging.info(f"grad: {grad_time/all_time:.3E}, hess: {hess_time/all_time:.3E}")
         # logging.info(radii)
         return radii
 
@@ -459,6 +468,7 @@ class NLGCG:
         support: int,
         mode: str = "trust_region",
         log_results: bool = True,
+        full_trace: bool = False,
     ) -> np.ndarray:
         if log_results:
             logging.info(
@@ -473,11 +483,15 @@ class NLGCG:
             grad_f_N=self.grad_f_N,
             grad_j_N=self.grad_j_N,
         )
-        params_new = newton_method.solve(
-            k=k, params=params, support=support, log_results=log_results
+        params_new, newton_information = newton_method.solve(
+            k=k,
+            params=params,
+            support=support,
+            log_results=log_results,
+            full_trace=full_trace,
         )
         del newton_method
-        return params_new
+        return params_new, newton_information
 
     def solve(
         self,
@@ -488,7 +502,9 @@ class NLGCG:
         inner_mode: str = "trust_region",
         temperature: float = 1.0,
         log_results: bool = True,
+        full_trace: bool = False,
     ) -> tuple:
+        all_information = []
         self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
         self.C_raw = self.C_0
         epsilon = max(1, 0.5 * self.j(u_0, c_0))
@@ -527,6 +543,8 @@ class NLGCG:
                 optimization="full",
                 log_results=log_results,
             )
+            if full_trace and len(u_coef.coefficients):
+                all_information.append((u_coef, c_coef))
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
             ssn_1_time = time.perf_counter() - t
 
@@ -619,13 +637,16 @@ class NLGCG:
                 #             ax.set_ylim(x[1] - 1, x[1] + 1)
                 #             plt.show()
                 #             break
-                full_parameters_new = self.newton_step(
+                full_parameters_new, newton_information = self.newton_step(
                     k=k,
                     params=full_parameters,
                     support=len(u_ks.support),
                     mode=inner_mode,
                     log_results=log_results,
+                    full_trace=full_trace,
                 )
+                if full_trace:
+                    all_information.append(newton_information)
                 if self.experiment_type == "Euclidean":
                     parameters = full_parameters_new[:-1].reshape(parameters.shape)
                     c_ks = full_parameters_new[-1]
@@ -652,6 +673,8 @@ class NLGCG:
                 optimization="full",
                 log_results=log_results,
             )
+            if full_trace:
+                all_information.append((u, c))
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
             ssn_2_time = time.perf_counter() - t
@@ -665,32 +688,32 @@ class NLGCG:
             lgcg_total += 1
             lgcg_time = time.perf_counter() - t
 
-            # # Plot dual variable
-            # P = lambda x: np.abs(p_u(x))
-            # a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
-            # B, D = np.meshgrid(a, a)
-            # vals = np.array(
-            #     [
-            #         P(np.array([[x_1, x_2]]))
-            #         for x_1, x_2 in zip(B.flatten(), D.flatten())
-            #     ]
-            # ).reshape((len(a), len(a)))
-            # plt.contourf(B, D, vals, levels=100)
-            # plt.colorbar()
-            # # for i, x in enumerate(true_sources):
-            # #     if i:
-            # #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
-            # #     else:
-            # #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
-            # # for i, x in enumerate(u_tilde.support):
-            # #     if i:
-            # #         plt.plot([x[0]], [x[1]], "o", c="b")
-            # #     else:
-            # #         plt.plot([x[0]], [x[1]], "o", c="b", label="Optimal support")
-            # # plt.legend()
-            # # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
-            # # plt.close()
-            # plt.show()
+            # Plot dual variable
+            P = lambda x: np.abs(p_u(x))
+            a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
+            B, D = np.meshgrid(a, a)
+            vals = np.array(
+                [
+                    P(np.array([[x_1, x_2]]))
+                    for x_1, x_2 in zip(B.flatten(), D.flatten())
+                ]
+            ).reshape((len(a), len(a)))
+            plt.contourf(B, D, vals, levels=100)
+            plt.colorbar()
+            # for i, x in enumerate(true_sources):
+            #     if i:
+            #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
+            #     else:
+            #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
+            for i, x in enumerate(u.support):
+                if i:
+                    plt.plot([x[0]], [x[1]], "o", c="r")
+                else:
+                    plt.plot([x[0]], [x[1]], "o", c="r", label="Optimal support")
+            # plt.legend()
+            # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
+            # plt.close()
+            plt.show()
 
             times.append(time.perf_counter() - initial_time)
             supports.append(len(u.support))
@@ -724,4 +747,5 @@ class NLGCG:
             objective_values,
             dropped_tot,
             epsilons,
+            all_information,
         )

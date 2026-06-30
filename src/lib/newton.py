@@ -98,7 +98,12 @@ class Newton:
             return 0
 
     def globalized_lbfgs(
-        self, k: int, params: np.ndarray, support: float, log_results: bool
+        self,
+        k: int,
+        params: np.ndarray,
+        support: float,
+        log_results: bool,
+        full_trace: bool = False,
     ) -> np.ndarray:
         # https://arxiv.org/pdf/2401.03805
 
@@ -177,7 +182,7 @@ class Newton:
             params = params_new.copy()
             grad = grad_new.copy()
 
-        return params
+        return params, []
 
     def steihaug_cg(
         self,
@@ -234,9 +239,15 @@ class Newton:
         return q, i + 1, np.sqrt(r_r)
 
     def trust_region(
-        self, k: int, params: np.ndarray, support: float, log_results: bool
+        self,
+        k: int,
+        params: np.ndarray,
+        support: float,
+        log_results: bool,
+        full_trace: bool = False,
     ) -> np.ndarray:
         # Nocedal/Wright: Numerical Optimization Sect. 7.1
+        full_information = []
         grad = self.grad_j_N(params)
         grad_norm = np.linalg.norm(grad)
         delta = min(0.01, 0.5 * np.sqrt(grad_norm))
@@ -245,6 +256,9 @@ class Newton:
         for s_iter in range(self.max_inner_loop):
             if grad_norm < 1e-12:
                 break
+
+            if full_trace:
+                full_information.append(params)
 
             hess_grad = jax.jvp(
                 self.grad_j_N,
@@ -305,7 +319,9 @@ class Newton:
                 logging.info(
                     f"{k}, {s_iter}: Trust Region. choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, grad: {grad_norm:.2E}, objective {self.j_N(params):.14E}"
                 )
-        return params
+        if full_trace:
+            full_information.append(params)
+        return params, full_information
 
     def H(
         self,
@@ -401,7 +417,12 @@ class Newton:
         return q, i + 1, np.sqrt(r_r)
 
     def trust_region_ssn(
-        self, k: int, params: np.ndarray, support: float, log_results: bool
+        self,
+        k: int,
+        params: np.ndarray,
+        support: float,
+        log_results: bool,
+        full_trace: bool = False,
     ) -> np.ndarray:
         # https://arxiv.org/pdf/2106.09340
         Lipschitz = 1
@@ -536,4 +557,4 @@ class Newton:
                 logging.info(
                     f"{k}, {s_iter}: choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, normal_map: {normal_map_norm:.2E}, objective {self.j_N(prox_params):.14E}"
                 )
-        return prox_params
+        return prox_params, []
