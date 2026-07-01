@@ -131,9 +131,7 @@ def define_experiment():
     )
 
 
-def define_nlgcg_experiment(
-    global_search_resolution=100, dual_variable_goodness=0.3, newton_tolerance=2e-2
-):
+def define_nlgcg_experiment():
     (
         observations,
         target,
@@ -170,11 +168,12 @@ def define_nlgcg_experiment(
         grad_j_N=grad_j_N,
         alpha=alpha,
         Omega=Omega,
-        global_search_resolution=global_search_resolution,
-        dual_variable_goodness=dual_variable_goodness,
+        global_search_resolution=100,
+        dual_variable_goodness=0.3,
         constant_dim=len(target),
         kernel_dim=len(target),
-        newton_tolerance=newton_tolerance,
+        newton_tolerance=2e-2,
+        max_radius=max_radius,
     )
     return exp, p
 
@@ -263,7 +262,7 @@ def define_adaptive_refinement_experiment():
 def create_particle_matrix():
 
     # NLGCG
-    exp, p = define_nlgcg_experiment(global_search_resolution=5)
+    exp, p = define_nlgcg_experiment()
     (
         u,
         c,
@@ -275,7 +274,7 @@ def create_particle_matrix():
         objective_values,
         dropped_tot,
         epsilons,
-    ) = exp.solve(tol=5e-14, max_radius=max_radius, temperature=0.1)
+    ) = exp.solve(tol=5e-14, temperature=0.1)
 
     print(
         f"found optimimum with value {objective_values[-1]} (difference to ref {optimum} is {objective_values[-1] - optimum})"
@@ -388,9 +387,7 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
             all_information,
-        ) = exp_nlgcg.solve(
-            tol=5e-14, max_radius=max_radius, temperature=0.1, log_results=False
-        )
+        ) = exp_nlgcg.solve(tol=5e-14, temperature=0.1, log_results=False)
         local_residuals = adapt_time(
             times_nlgcg,
             [obj - optimum for obj in objective_values_nlgcg],

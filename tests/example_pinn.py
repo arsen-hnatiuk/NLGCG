@@ -287,6 +287,7 @@ def define_nlgcg_experiment():
         constant_dim=constant_dim,
         kernel_dim=kernel_dim,
         newton_tolerance=1e-1,
+        max_radius=max_radius,
     )
     return exp_nlgcg, true_function
 
@@ -391,9 +392,7 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
             all_information,
-        ) = exp_nlgcg.solve(
-            tol=5e-14, max_radius=max_radius, temperature=1, log_results=False
-        )
+        ) = exp_nlgcg.solve(tol=5e-14, temperature=1, log_results=False)
         local_residuals = adapt_time(
             times_nlgcg,
             [obj - optimum for obj in objective_values_nlgcg],

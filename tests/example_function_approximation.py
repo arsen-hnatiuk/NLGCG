@@ -148,9 +148,7 @@ def define_experiment():
     )
 
 
-def define_nlgcg_experiment(
-    global_search_resolution=5, dual_variable_goodness=0.3, newton_tolerance=2e-2
-):
+def define_nlgcg_experiment():
     (
         observations,
         target,
@@ -187,11 +185,12 @@ def define_nlgcg_experiment(
         grad_j_N=grad_j_N,
         alpha=alpha,
         Omega=Omega,
-        global_search_resolution=global_search_resolution,
-        dual_variable_goodness=dual_variable_goodness,
+        global_search_resolution=5,
+        dual_variable_goodness=0.3,
         constant_dim=len(target),
         kernel_dim=len(target),
-        newton_tolerance=newton_tolerance,
+        newton_tolerance=2e-2,
+        maax_radius=max_radius,
     )
     return exp
 
@@ -334,9 +333,7 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
             all_inormation,
-        ) = exp_nlgcg.solve(
-            tol=5e-14, max_radius=max_radius, temperature=1, log_results=False
-        )
+        ) = exp_nlgcg.solve(tol=5e-14, temperature=1, log_results=False)
         local_residuals = adapt_time(
             times_nlgcg,
             [obj - optimum for obj in objective_values_nlgcg],

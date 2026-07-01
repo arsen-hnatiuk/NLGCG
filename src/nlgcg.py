@@ -688,32 +688,32 @@ class NLGCG:
             lgcg_total += 1
             lgcg_time = time.perf_counter() - t
 
-            # Plot dual variable
-            P = lambda x: np.abs(p_u(x))
-            a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
-            B, D = np.meshgrid(a, a)
-            vals = np.array(
-                [
-                    P(np.array([[x_1, x_2]]))
-                    for x_1, x_2 in zip(B.flatten(), D.flatten())
-                ]
-            ).reshape((len(a), len(a)))
-            plt.contourf(B, D, vals, levels=100)
-            plt.colorbar()
-            # for i, x in enumerate(true_sources):
+            # # Plot dual variable
+            # P = lambda x: np.abs(p_u(x))
+            # a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
+            # B, D = np.meshgrid(a, a)
+            # vals = np.array(
+            #     [
+            #         P(np.array([[x_1, x_2]]))
+            #         for x_1, x_2 in zip(B.flatten(), D.flatten())
+            #     ]
+            # ).reshape((len(a), len(a)))
+            # plt.contourf(B, D, vals, levels=100)
+            # plt.colorbar()
+            # # for i, x in enumerate(true_sources):
+            # #     if i:
+            # #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
+            # #     else:
+            # #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
+            # for i, x in enumerate(u.support):
             #     if i:
-            #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
+            #         plt.plot([x[0]], [x[1]], "o", c="r")
             #     else:
-            #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
-            for i, x in enumerate(u.support):
-                if i:
-                    plt.plot([x[0]], [x[1]], "o", c="r")
-                else:
-                    plt.plot([x[0]], [x[1]], "o", c="r", label="Optimal support")
-            # plt.legend()
-            # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
-            # plt.close()
-            plt.show()
+            #         plt.plot([x[0]], [x[1]], "o", c="r", label="Optimal support")
+            # # plt.legend()
+            # # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
+            # # plt.close()
+            # plt.show()
 
             times.append(time.perf_counter() - initial_time)
             supports.append(len(u.support))

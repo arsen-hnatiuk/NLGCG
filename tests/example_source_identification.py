@@ -346,103 +346,152 @@ def create_plots():
     plt.close()
 
     # Plot particles motion
+    plot_vals = []
+    plot_start_points = []
+    plot_killed_points = []
+    plot_trajectories = []
+    plot_new_start_points = []
+    previous_final_positions = []
+    a = np.arange(0, 1, 0.01)
+    B, D = np.meshgrid(a, a)
     for ind in range(len(times_nlgcg) - 2):
-        u_0, c_0 = all_information[3 * ind]
-        u_1, c_1 = all_information[3 * ind + 1]
-        newton_part = all_information[3 * ind + 2]
-        p_u = p(u_0, c_0)
-        old_points = u_0.support.copy()
-        all_points = u_1.support.copy()
-        if not len(old_points):
-            new_points = all_points.copy()
-        else:
-            new_points = []
-            for point in all_points:
-                if np.min(np.linalg.norm(old_points - point, axis=1)) > 0:
-                    new_points.append(point)
-            new_points = np.array(new_points)
-        trajectories = defaultdict(list)
-        initial_positions = []
-        for par_ind, params in enumerate(newton_part):
-            reshaped = params[:-1].reshape(-1, Omega.shape[0] + 1)
-            points = reshaped[:, 1:]
-            for i, point in enumerate(points):
-                trajectories[i].append((point[0], point[1]))
-                if not par_ind:
-                    initial_positions.append(point)
-        initial_positions = np.array(initial_positions)
-        start_points = []
-        for point in all_points:
-            if np.min(np.linalg.norm(initial_positions - point, axis=1)) < 1e-10:
-                start_points.append(point)
-        start_points = np.array(start_points)
-        if not len(old_points):
-            new_start_points = all_points.copy()
-        else:
-            new_start_points = []
-            for point in start_points:
-                if np.min(np.linalg.norm(old_points - point, axis=1)) > 0:
-                    new_start_points.append(point)
-            new_start_points = np.array(new_start_points)
+        if len(plot_vals) < 4:
+            u_0, c_0 = all_information[3 * ind]
+            u_1, c_1 = all_information[3 * ind + 1]
+            newton_part = all_information[3 * ind + 2]
+            p_u = p(u_0, c_0)
+            old_points = u_0.support.copy()
+            lgcg_points = u_1.support.copy()
+            all_points = lgcg_points.copy()
+            if not len(old_points):
+                new_points = lgcg_points.copy()
+            else:
+                new_points = []
+                for point in lgcg_points:
+                    if np.min(np.linalg.norm(old_points - point, axis=1)) > 0:
+                        new_points.append(point)
+                new_points = np.array(new_points)
+            trajectories = defaultdict(list)
+            initial_positions = []
+            final_positions = []
+            for par_ind, params in enumerate(newton_part):
+                reshaped = params[:-1].reshape(-1, Omega.shape[0] + 1)
+                points = reshaped[:, 1:]
+                for i, point in enumerate(points):
+                    trajectories[i].append((point[0], point[1]))
+                    if not par_ind:
+                        initial_positions.append(point)
+                    elif par_ind == len(newton_part) - 1:
+                        final_positions.append(point)
+            plot_trajectories.append(trajectories)
+            initial_positions = np.array(initial_positions)
+            final_positions = np.array(final_positions)
+            if not len(old_points):
+                new_start_points = lgcg_points.copy()
+            else:
+                new_start_points = []
+                for point in lgcg_points:
+                    if np.min(np.linalg.norm(initial_positions - point, axis=1)) < 1e-8:
+                        if np.min(np.linalg.norm(old_points - point, axis=1)) > 0:
+                            new_start_points.append(point)
+                new_start_points = np.array(new_start_points)
+            plot_new_start_points.append(new_start_points)
+            start_points = []
+            for point in lgcg_points:
+                if np.min(np.linalg.norm(initial_positions - point, axis=1)) < 1e-8:
+                    if (
+                        not len(new_start_points)
+                        or np.min(np.linalg.norm(new_start_points - point, axis=1)) > 0
+                    ):
+                        start_points.append(point)
+            start_points = np.array(start_points)
+            plot_start_points.append(start_points)
+            killed_points = []
+            for point in previous_final_positions:
+                if np.min(np.linalg.norm(initial_positions - point, axis=1)) > 0:
+                    killed_points.append(point)
+            killed_points = np.array(killed_points)
+            plot_killed_points.append(killed_points)
+            previous_final_positions = final_positions
 
-        u_next, c_next = all_information[3 * ind + 3]
-        p_u = p(u_next, c_next)
-        P = lambda x: np.abs(p_u(x))
-        a = np.arange(0, 1, 0.01)
-        B, D = np.meshgrid(a, a)
-        vals = np.array(
-            [P(np.array([[x_1, x_2]])) for x_1, x_2 in zip(B.flatten(), D.flatten())]
-        ).reshape((100, 100))
-        plt.contourf(B, D, vals, levels=100)
+            u_next, c_next = all_information[3 * ind + 3]
+            p_u = p(u_next, c_next)
+            P = lambda x: np.abs(p_u(x))
+            vals = np.array(
+                [
+                    P(np.array([[x_1, x_2]]))
+                    for x_1, x_2 in zip(B.flatten(), D.flatten())
+                ]
+            ).reshape((100, 100))
+            plot_vals.append(vals)
+
+    line_legend = False
+    add_legend = False
+    remove_legend = False
+    start_legend = False
+    fig, axes = plt.subplots(2, 2, figsize=(8, 8))
+    for ax, vals, trajectories, killed_points, start_points, new_start_points in zip(
+        axes.flatten(),
+        plot_vals,
+        plot_trajectories,
+        plot_killed_points,
+        plot_start_points,
+        plot_new_start_points,
+    ):
+        ax.contourf(B, D, vals, levels=100)
         for i, trajectory in trajectories.items():
             traj_x = [position[0] for position in trajectory]
             traj_y = [position[1] for position in trajectory]
-            if i:
-                (line,) = plt.plot(traj_x, traj_y, c="black")
+            if line_legend:
+                (line,) = ax.plot(traj_x, traj_y, c="black", linewidth=2)
                 line.set_path_effects(
-                    [pe.Stroke(linewidth=2, foreground="white"), pe.Normal()]
+                    [pe.Stroke(linewidth=3, foreground="white"), pe.Normal()]
                 )
             else:
-                (line,) = plt.plot(traj_x, traj_y, c="black", label="Position sliding")
-                line.set_path_effects(
-                    [pe.Stroke(linewidth=2, foreground="white"), pe.Normal()]
+                (line,) = ax.plot(
+                    traj_x, traj_y, c="black", linewidth=2, label="Position trajectory"
                 )
-        # for i, x in enumerate(all_points):
-        #     if i:
-        #         plt.plot([x[0]], [x[1]], "o", c="r", markersize=5)
-        #     else:
-        #         plt.plot(
-        #             [x[0]], [x[1]], "o", c="r", markersize=5, label="Old support points"
-        #         )
-        # for i, x in enumerate(new_points):
-        #     if i:
-        #         plt.plot([x[0]], [x[1]], "o", c="g", markersize=5)
-        #     else:
-        #         plt.plot(
-        #             [x[0]], [x[1]], "o", c="g", markersize=5, label="New support points"
-        #         )
+                line.set_path_effects(
+                    [pe.Stroke(linewidth=3, foreground="white"), pe.Normal()]
+                )
+                line_legend = True
+        for i, x in enumerate(killed_points):
+            if remove_legend:
+                ax.plot([x[0]], [x[1]], "X", c="r", markersize=9)
+            else:
+                ax.plot(
+                    [x[0]], [x[1]], "X", c="r", markersize=9, label="Removed position"
+                )
+                remove_legend = True
         for i, x in enumerate(start_points):
-            if i:
-                plt.plot([x[0]], [x[1]], "o", c="r", markersize=5)
+            if start_legend:
+                ax.plot([x[0]], [x[1]], "o", c="darkviolet", markersize=7)
             else:
-                plt.plot(
-                    [x[0]], [x[1]], "o", c="r", markersize=5, label="Start position"
-                )
-        for i, x in enumerate(new_start_points):
-            if i:
-                plt.plot([x[0]], [x[1]], "o", c="g", markersize=5)
-            else:
-                plt.plot(
+                ax.plot(
                     [x[0]],
                     [x[1]],
                     "o",
-                    c="g",
-                    markersize=5,
-                    label="New start positions",
+                    c="darkviolet",
+                    markersize=7,
+                    label="Start position",
                 )
-        plt.legend()
-        plt.savefig(results_dir / f"position_sliding_{ind}.png", bbox_inches="tight")
-        plt.close()
+                start_legend = True
+        for i, x in enumerate(new_start_points):
+            if add_legend:
+                ax.plot([x[0]], [x[1]], "^", c="chocolate", markersize=9)
+            else:
+                ax.plot(
+                    [x[0]],
+                    [x[1]],
+                    "^",
+                    c="chocolate",
+                    markersize=9,
+                    label="Newly added start positions",
+                )
+                add_legend = True
+    fig.legend(loc="outside lower center", mode="expand", ncols=4)
+    plt.savefig(results_dir / f"position_sliding.png", bbox_inches="tight")
+    plt.close()
 
     logging.getLogger().setLevel(logging.INFO)  # Reinstate logging
 

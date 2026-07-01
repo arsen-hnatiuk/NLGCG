@@ -40,8 +40,8 @@ sample_size = 24000
 alpha = 1e-4
 tau = 0.1
 endpoint = False
-max_radius = (Omega[0][1] - Omega[0][0]) / 50
-optimum = 0.00021875539890605245
+max_radius = (Omega[0][1] - Omega[0][0]) / 100
+optimum = 0.000218755398904130
 
 # Draw sample from true distribution
 angles = torch.linspace(0, 2 * math.pi, source_number + 1)[:-1]
@@ -154,9 +154,7 @@ def define_experiment():
     )
 
 
-def define_nlgcg_experiment(
-    global_search_resolution=5, dual_variable_goodness=0.3, newton_tolerance=2e-2
-):
+def define_nlgcg_experiment():
     (
         kernel_k,
         kernel_s,
@@ -189,9 +187,9 @@ def define_nlgcg_experiment(
         grad_j_N=grad_j_N,
         alpha=alpha,
         Omega=Omega,
-        global_search_resolution=global_search_resolution,
-        dual_variable_goodness=dual_variable_goodness,
-        newton_tolerance=newton_tolerance,
+        global_search_resolution=5,
+        dual_variable_goodness=0.3,
+        newton_tolerance=1,
         max_radius=max_radius,
         experiment_type="RKHS",
     )
@@ -232,67 +230,135 @@ def bring_to_same_length(arrays):
     return new_arrays
 
 
-def create_plots():
-    # NLGCG
-    logging.info(f"Running NLGCG (trial {i+1})")
-    exp_nlgcg = define_nlgcg_experiment(newton_tolerance=1)
-    (
-        u_nlgcg,
-        c_nlgcg,
-        times_nlgcg,
-        supports_nlgcg,
-        inner_loop,
-        lgcg_lazy,
-        lgcg_total,
-        objective_values_nlgcg,
-        dropped_tot,
-        epsilons,
-        all_information,
-    ) = exp_nlgcg.solve(tol=5e-14, temperature=1, log_results=True)
-    del exp_nlgcg
+def create_plots(Nrun: int = 10):
+    resolution = 1  # time resolution for the plots (seconds)
+    frame_size = 1000  # Time frame tracked for the residuals (seconds)
 
-    nlgcg_residuals = objective_values_nlgcg - optimum
+    # NLGCG
+    nlgcg_residuals = []
+    nlgcg_supports = []
+    nlgcg_converged = 0
+    for i in range(Nrun):
+        logging.info(f"Running NLGCG (trial {i+1})")
+        exp_nlgcg = define_nlgcg_experiment()
+        (
+            u_nlgcg,
+            c_nlgcg,
+            times_nlgcg,
+            supports_nlgcg,
+            inner_loop,
+            lgcg_lazy,
+            lgcg_total,
+            objective_values_nlgcg,
+            dropped_tot,
+            epsilons,
+            all_information,
+        ) = exp_nlgcg.solve(tol=5e-14, temperature=1, log_results=False)
+        local_residuals = adapt_time(
+            times_nlgcg,
+            [obj - optimum for obj in objective_values_nlgcg],
+            frame=frame_size,
+            resolution=resolution,
+        )
+        if local_residuals[-1] < 1e-5:
+            nlgcg_converged += 1
+        nlgcg_residuals.append(local_residuals)
+        nlgcg_supports.append(supports_nlgcg)
+        del exp_nlgcg
+    logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
+
+    nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
+    nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
+    nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
+
     particle_descent_times = np.array(joblib.load(module_path / "tests/times.joblib"))
     particle_descent_supports = np.array(
         joblib.load(module_path / "tests/supports.joblib")
     )
-    particle_descent_residuals = (
-        np.array(joblib.load(module_path / "tests/objectives.joblib")) - optimum
+    particle_descent_objectives = np.array(
+        joblib.load(module_path / "tests/objectives.joblib")
+    )
+    particle_descent_residuals = adapt_time(
+        particle_descent_times,
+        [obj - optimum for obj in particle_descent_objectives],
+        frame=frame_size,
+        resolution=resolution,
     )
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 
     # Plot residuals
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "FastPart"]
+    names = ["NLGCG", "FS&P"]
     styles = ["-", "--"]
-    for array, domain, name, style in zip(
-        [nlgcg_residuals, particle_descent_residuals],
-        [times_nlgcg, particle_descent_times],
+    colors = ["tab:blue", "tab:orange"]
+    for array, name, style, color in zip(
+        [nlgcg_residuals_mean, particle_descent_residuals],
         names,
         styles,
+        colors,
     ):
-        ax.semilogy(domain, array, style, label=name)
+        ax.semilogy(
+            resolution * np.arange(len(array)), array, style, label=name, color=color
+        )
+    ax.fill(
+        np.hstack(
+            (
+                resolution * np.arange(len(nlgcg_residuals_mean)),
+                resolution * np.arange(len(nlgcg_residuals_mean))[::-1],
+            )
+        ),
+        np.hstack(
+            (
+                np.max(bring_to_same_length(nlgcg_residuals), axis=0),
+                np.min(bring_to_same_length(nlgcg_residuals), axis=0)[::-1],
+            )
+        ),
+        "tab:blue",
+        alpha=0.3,
+    )
     plt.ylabel("Objective residual")
     plt.xlabel("Time (s)")
-    plt.ylim(1e-10, 100)
-    # plt.xlim(0, 100)
+    plt.ylim(1e-10, 1e-2)
+    plt.xlim(0, 400)
     ax.legend()
     plt.savefig(results_dir / "residuals.png", bbox_inches="tight")
     plt.close()
 
     # Plot supports
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", "FastPart"]
+    names = ["NLGCG", "FS&P"]
     styles = ["-", "--"]
-    for array, name, style in zip(
-        [supports_nlgcg, particle_descent_supports],
+    for array, name, style, color in zip(
+        [
+            nlgcg_supports_mean,
+            particle_descent_supports,
+        ],
         names,
         styles,
+        colors,
     ):
-        ax.semilogx(np.arange(len(array)), array, style, label=name)
+        ax.semilogx(np.arange(len(array)), array, style, label=name, color=color)
+    ax.fill(
+        np.hstack(
+            (
+                np.arange(len(nlgcg_supports_mean)),
+                np.arange(len(nlgcg_supports_mean))[::-1],
+            )
+        ),
+        np.hstack(
+            (
+                np.array(nlgcg_supports_mean) - np.array(nlgcg_supports_std),
+                np.array(nlgcg_supports_mean)[::-1]
+                + np.array(nlgcg_supports_std)[::-1],
+            )
+        ),
+        "tab:blue",
+        alpha=0.3,
+    )
     plt.ylabel("Support points")
     plt.xlabel("Iterations")
+    # plt.ylim(1e-12, 100)
     # plt.xlim(0, 100)
     ax.legend()
     plt.savefig(results_dir / "supports.png", bbox_inches="tight")
