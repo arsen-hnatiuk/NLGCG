@@ -238,10 +238,6 @@ class NLGCG:
         support = u.support
         K_matrix = self.kernel_k(support, support)
         S_vector = self.kernel_s(support)
-        # diff_support = np.subtract.outer(support, support)
-        # hessian = self.k_tilde_sigma(diff_support)
-        # diff_X = np.subtract.outer(self.X, support)
-        # target_part = self.k_tilde(diff_X)
         finite_j = (
             lambda weights: 0.5 * weights.T @ K_matrix @ weights
             - S_vector @ weights
@@ -333,20 +329,13 @@ class NLGCG:
             return u_plus.to_matrix(), u_plus, new_radii, old_radii
 
     def compute_radii(self, u: Measure, c: float) -> list:
-        # grad_time = 0
-        # hess_time = 0
-        # t_0 = time.perf_counter()
         radii = []
         if not len(u.coefficients):
             return radii
-        # t = time.perf_counter()
         grad_p = self.grad_p(u, c)
         grads = grad_p(u.support)
-        # grad_time += time.perf_counter() - t
-        # t = time.perf_counter()
         hess_p = self.hess_p(u, c)
         hesses = hess_p(u.support)
-        # hess_time += time.perf_counter() - t
         for point_grad, point_hess in zip(grads, hesses):
             grad_norm = np.linalg.norm(point_grad)
             try:
@@ -361,9 +350,6 @@ class NLGCG:
             except np.linalg.LinAlgError:
                 # If the Hessian contains nan, we cannot compute a radius
                 radii.append(self.max_radius)
-        # all_time = time.perf_counter() - t_0
-        # logging.info(f"grad: {grad_time/all_time:.3E}, hess: {hess_time/all_time:.3E}")
-        # logging.info(radii)
         return radii
 
     def lgcg_step(
@@ -524,9 +510,6 @@ class NLGCG:
         c_plus = c_0
         phi_numerical = tol + 1
         while phi_numerical > tol:
-            # if k > 5:
-            #     break
-
             global_valid = "N/A"
 
             t = time.perf_counter()
@@ -561,11 +544,11 @@ class NLGCG:
                 full_parameters = np.hstack((parameters.flatten(), c_ks))
             else:
                 full_parameters = parameters.flatten()
-            if log_results and len(full_parameters):
-                e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
-                logging.info(
-                    f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
-                )
+            # if log_results and len(full_parameters):
+            #     e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
+            #     logging.info(
+            #         f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
+            #     )
 
             if len(u_ks.coefficients):
                 # # Plot the true and predicted sources
@@ -679,6 +662,43 @@ class NLGCG:
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
             ssn_2_time = time.perf_counter() - t
 
+            # Plot dual variable
+            if not k % 10:
+                hess_p_u_vals = self.hess_p(u, c)(u.support)
+                for i, x in enumerate(u.support):
+                    e_vals = np.linalg.eigvals(hess_p_u_vals[i])
+                    logging.info(x)
+                    logging.info(
+                        f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
+                    )
+                    logging.info("-" * 50)
+
+                P = lambda x: np.abs(p_u(x))
+                a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
+                B, D = np.meshgrid(a, a)
+                vals = np.array(
+                    [
+                        P(np.array([[x_1, x_2]]))
+                        for x_1, x_2 in zip(B.flatten(), D.flatten())
+                    ]
+                ).reshape((len(a), len(a)))
+                plt.contourf(B, D, vals, levels=100)
+                plt.colorbar()
+                # for i, x in enumerate(true_sources):
+                #     if i:
+                #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
+                #     else:
+                #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
+                for i, x in enumerate(u.support):
+                    if i:
+                        plt.plot([x[0]], [x[1]], "o", c="r")
+                    else:
+                        plt.plot([x[0]], [x[1]], "o", c="r", label="Optimal support")
+                # plt.legend()
+                # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
+                # plt.close()
+                plt.show()
+
             t = time.perf_counter()
             u_plus, epsilon, global_valid, phi_numerical = self.lgcg_step(
                 p_u, u, c, epsilon, q_u, radii, mode, temperature, log_results
@@ -687,33 +707,6 @@ class NLGCG:
             lgcg_lazy += int(global_valid)
             lgcg_total += 1
             lgcg_time = time.perf_counter() - t
-
-            # # Plot dual variable
-            # P = lambda x: np.abs(p_u(x))
-            # a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
-            # B, D = np.meshgrid(a, a)
-            # vals = np.array(
-            #     [
-            #         P(np.array([[x_1, x_2]]))
-            #         for x_1, x_2 in zip(B.flatten(), D.flatten())
-            #     ]
-            # ).reshape((len(a), len(a)))
-            # plt.contourf(B, D, vals, levels=100)
-            # plt.colorbar()
-            # # for i, x in enumerate(true_sources):
-            # #     if i:
-            # #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
-            # #     else:
-            # #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
-            # for i, x in enumerate(u.support):
-            #     if i:
-            #         plt.plot([x[0]], [x[1]], "o", c="r")
-            #     else:
-            #         plt.plot([x[0]], [x[1]], "o", c="r", label="Optimal support")
-            # # plt.legend()
-            # # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
-            # # plt.close()
-            # plt.show()
 
             times.append(time.perf_counter() - initial_time)
             supports.append(len(u.support))
