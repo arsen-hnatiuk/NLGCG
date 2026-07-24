@@ -416,16 +416,15 @@ def create_plots(Nrun: int = 10):
     fig, ax = plt.subplots(figsize=(5, 4))
     names = ["NLGCG", "Particle Descent", "Adaptive Refinement"]
     styles = ["-", "--", ":"]
-    for array, name, style in zip(
-        [
-            nlgcg_residuals_mean,
-            particle_residuals_mean,
-            residuals_adaptive,
-        ],
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+    for array, name, style, color in zip(
+        [nlgcg_residuals_mean, particle_residuals_mean, residuals_adaptive, colors],
         names,
         styles,
     ):
-        ax.semilogy(resolution * np.arange(len(array)), array, style, label=name)
+        ax.semilogy(
+            resolution * np.arange(len(array)), array, style, label=name, color=color
+        )
     ax.fill(
         np.hstack(
             (
@@ -470,16 +469,12 @@ def create_plots(Nrun: int = 10):
     fig, ax = plt.subplots(figsize=(5, 4))
     names = ["NLGCG", "Particle Descent", "Adaptive Refinement"]
     styles = ["-", "--", ":"]
-    for array, name, style in zip(
-        [
-            nlgcg_supports_mean,
-            particle_supports_mean,
-            supports_adaptive,
-        ],
+    for array, name, style, color in zip(
+        [nlgcg_supports_mean, particle_supports_mean, supports_adaptive, colors],
         names,
         styles,
     ):
-        ax.semilogx(np.arange(len(array)), array, style, label=name)
+        ax.semilogx(np.arange(len(array)), array, style, label=name, color=color)
     ax.fill(
         np.hstack(
             (

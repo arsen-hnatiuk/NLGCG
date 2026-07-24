@@ -486,7 +486,7 @@ def create_plots():
                     "^",
                     c="chocolate",
                     markersize=9,
-                    label="Newly added start positions",
+                    label="Newly added start position",
                 )
                 add_legend = True
     fig.legend(loc="outside lower center", mode="expand", ncols=4)

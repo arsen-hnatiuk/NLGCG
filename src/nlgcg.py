@@ -544,82 +544,13 @@ class NLGCG:
                 full_parameters = np.hstack((parameters.flatten(), c_ks))
             else:
                 full_parameters = parameters.flatten()
-            # if log_results and len(full_parameters):
-            #     e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
-            #     logging.info(
-            #         f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
-            #     )
+            if log_results and len(full_parameters):
+                e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
+                logging.info(
+                    f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
+                )
 
             if len(u_ks.coefficients):
-                # # Plot the true and predicted sources
-                # fig, ax = plt.subplots(figsize=(5, 4))
-                # for i, x in enumerate(u_coef.support):
-                #     ax.add_patch(
-                #         plt.Circle(
-                #             (x[0], x[1]),
-                #             radius=max(0.5, old_radii[i]),
-                #             color="blue",
-                #             fill=False,
-                #             alpha=0.5,
-                #         )
-                #     )
-                #     plt.plot([x[0]], [x[1]], "o", c="b", markersize=2)
-                # for i, x in enumerate(u_ks.support):
-                #     plt.plot([x[0]], [x[1]], "o", c="r", markersize=2)
-                # ax.set_xlim(self.Omega[0][0], self.Omega[0][1])
-                # ax.set_ylim(self.Omega[1][0], self.Omega[1][1])
-                # ax.set_xlabel("True and predicted sources")
-                # plt.show()
-                # if len(u_ks.support) > 1:
-                #     for i, x in enumerate(u_ks.support):
-                #         if (
-                #             np.min(
-                #                 np.linalg.norm(
-                #                     u_ks.support[
-                #                         np.array(
-                #                             [
-                #                                 _
-                #                                 for _ in range(len(u_ks.coefficients))
-                #                                 if _ != i
-                #                             ]
-                #                         )
-                #                     ]
-                #                     - x,
-                #                     axis=1,
-                #                 )
-                #             )
-                #             < 1
-                #         ):
-                #             # Plot dual variable
-                #             p_coef = self.p(u_coef, c_coef)
-                #             P = lambda x: np.abs(p_coef(x))
-                #             fig, ax = plt.subplots(figsize=(5, 4))
-                #             a = np.linspace(x[0] - 1, x[0] + 1, 100)
-                #             b = np.linspace(x[1] - 1, x[1] + 1, 100)
-                #             B, D = np.meshgrid(a, b)
-                #             vals = np.array(
-                #                 [
-                #                     P(np.array([[x_1, x_2]]))
-                #                     for x_1, x_2 in zip(B.flatten(), D.flatten())
-                #                 ]
-                #             ).reshape((len(a), len(a)))
-                #             cb = ax.contourf(B, D, vals, levels=100)
-                #             fig.colorbar(cb, ax=ax)
-                #             for i, x in enumerate(u_coef.support):
-                #                 ax.add_patch(
-                #                     plt.Circle(
-                #                         (x[0], x[1]),
-                #                         radius=old_radii[i],
-                #                         color="r",
-                #                         fill=False,
-                #                         alpha=0.5,
-                #                     )
-                #                 )
-                #                 # plt.plot([x[0]], [x[1]], "o", c="r", markersize=2)
-                #             ax.set_xlim(x[0] - 1, x[0] + 1)
-                #             ax.set_ylim(x[1] - 1, x[1] + 1)
-                #             plt.show()
-                #             break
                 full_parameters_new, newton_information = self.newton_step(
                     k=k,
                     params=full_parameters,
@@ -662,42 +593,44 @@ class NLGCG:
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
             ssn_2_time = time.perf_counter() - t
 
-            # Plot dual variable
-            if not k % 10:
-                hess_p_u_vals = self.hess_p(u, c)(u.support)
-                for i, x in enumerate(u.support):
-                    e_vals = np.linalg.eigvals(hess_p_u_vals[i])
-                    logging.info(x)
-                    logging.info(
-                        f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
-                    )
-                    logging.info("-" * 50)
+            # # Plot dual variable
+            # if not k % 10:
+            #     hess_p_u_vals = self.hess_p(u, c)(u.support)
+            #     grad_p_u_vals = self.grad_p(u, c)(u.support)
+            #     for i, x in enumerate(u.support):
+            #         e_vals = np.linalg.eigvals(hess_p_u_vals[i])
+            #         logging.info(x)
+            #         logging.info(np.linalg.norm(grad_p_u_vals[i]))
+            #         logging.info(
+            #             f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
+            #         )
+            #         logging.info("-" * 50)
 
-                P = lambda x: np.abs(p_u(x))
-                a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
-                B, D = np.meshgrid(a, a)
-                vals = np.array(
-                    [
-                        P(np.array([[x_1, x_2]]))
-                        for x_1, x_2 in zip(B.flatten(), D.flatten())
-                    ]
-                ).reshape((len(a), len(a)))
-                plt.contourf(B, D, vals, levels=100)
-                plt.colorbar()
-                # for i, x in enumerate(true_sources):
-                #     if i:
-                #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
-                #     else:
-                #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
-                for i, x in enumerate(u.support):
-                    if i:
-                        plt.plot([x[0]], [x[1]], "o", c="r")
-                    else:
-                        plt.plot([x[0]], [x[1]], "o", c="r", label="Optimal support")
-                # plt.legend()
-                # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
-                # plt.close()
-                plt.show()
+            #     P = lambda x: np.abs(p_u(x))
+            #     a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
+            #     B, D = np.meshgrid(a, a)
+            #     vals = np.array(
+            #         [
+            #             P(np.array([[x_1, x_2]]))
+            #             for x_1, x_2 in zip(B.flatten(), D.flatten())
+            #         ]
+            #     ).reshape((len(a), len(a)))
+            #     plt.contourf(B, D, vals, levels=100)
+            #     plt.colorbar()
+            #     # for i, x in enumerate(true_sources):
+            #     #     if i:
+            #     #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
+            #     #     else:
+            #     #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
+            #     for i, x in enumerate(u.support):
+            #         if i:
+            #             plt.plot([x[0]], [x[1]], "o", c="r")
+            #         else:
+            #             plt.plot([x[0]], [x[1]], "o", c="r", label="Optimal support")
+            #     # plt.legend()
+            #     # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
+            #     # plt.close()
+            #     plt.show()
 
             t = time.perf_counter()
             u_plus, epsilon, global_valid, phi_numerical = self.lgcg_step(

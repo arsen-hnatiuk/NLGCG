@@ -57,7 +57,9 @@ class GlobalSearch:
         if mode == "deterministic":  # Standard deterministic method
             self.get_grid = self.deterministic_grid
             self.stop_search = 5
-        elif mode == "stochastic_adaptive":  # Proposed method
+        elif (
+            mode == "stochastic_adaptive"
+        ):  # Stochastic refinement of stochastic grid, used in the paper
             self.get_grid = self.stochastic_grid_adaptive
             self.stop_search = 3
         elif mode == "stochastic":  # Stochastic refinement of deterministic grid
@@ -198,7 +200,9 @@ class GlobalSearch:
             return success, grid, grid_vals, best_point, best_val
 
         while mesh > self.newton_tolerance:
-            lipschitzs = self.batch_compute(grid, lipschitz_function)
+            lipschitzs = self.batch_compute(
+                grid, lipschitz_function, additional_factor=3
+            )
 
             relevant_indices = grid_vals + lipschitzs * mesh > best_val
             del lipschitzs
@@ -243,7 +247,7 @@ class GlobalSearch:
             if log_results:
                 logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
 
-        lipschitzs = self.batch_compute(grid, lipschitz_function)
+        lipschitzs = self.batch_compute(grid, lipschitz_function, additional_factor=3)
         relevant_indices = grid_vals + lipschitzs * mesh > best_val
         del lipschitzs
         grid = grid[relevant_indices]
@@ -338,10 +342,14 @@ class GlobalSearch:
         return value
 
     def batch_compute(
-        self, inputs: np.ndarray, func: Callable, batch_size: int = 0
+        self,
+        inputs: np.ndarray,
+        func: Callable,
+        batch_size: int = 0,
+        additional_factor: float = 1,
     ) -> np.ndarray:
         if not batch_size:
-            batching_factor = (
+            batching_factor = additional_factor * (
                 self.len_target * self.Omega.shape[0] * (self.Omega.shape[0] + 1)
                 + 2 * self.Omega.shape[0]
                 + 1
@@ -426,10 +434,12 @@ class GlobalSearch:
 
         while mesh > self.newton_tolerance or not sampled_local:
             if not len(lipschitzs):
-                lipschitzs = self.batch_compute(grid, lipschitz_function)
+                lipschitzs = self.batch_compute(
+                    grid, lipschitz_function, additional_factor=3
+                )
             else:
                 points_new_lipschitzs = self.batch_compute(
-                    points_new, lipschitz_function
+                    points_new, lipschitz_function, additional_factor=3
                 )
                 lipschitzs = np.append(lipschitzs, points_new_lipschitzs)
                 del points_new
@@ -483,9 +493,13 @@ class GlobalSearch:
             sampled_local = True  # We want to enter the loop at least once
 
         if not len(lipschitzs):
-            lipschitzs = self.batch_compute(grid, lipschitz_function)
+            lipschitzs = self.batch_compute(
+                grid, lipschitz_function, additional_factor=3
+            )
         else:
-            points_new_lipschitzs = self.batch_compute(points_new, lipschitz_function)
+            points_new_lipschitzs = self.batch_compute(
+                points_new, lipschitz_function, additional_factor=3
+            )
             lipschitzs = np.append(lipschitzs, points_new_lipschitzs)
             del points_new
             del points_new_lipschitzs

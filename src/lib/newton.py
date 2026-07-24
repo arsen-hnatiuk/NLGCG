@@ -55,7 +55,7 @@ class Newton:
         self.machine_precision = 5e-14
         if mode == "globalized_lbfgs":
             self.solve = self.globalized_lbfgs
-        elif mode == "trust_region":
+        elif mode == "trust_region":  # Recommended
             self.solve = self.trust_region
         elif mode == "trust_region_ssn":
             self.solve = self.trust_region_ssn

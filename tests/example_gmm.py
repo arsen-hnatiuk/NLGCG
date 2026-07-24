@@ -271,6 +271,7 @@ def create_plots(Nrun: int = 10):
     nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
     nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
 
+    # Particle descent metrics from cluster
     particle_descent_times = np.array(joblib.load(module_path / "tests/times.joblib"))
     particle_descent_supports = np.array(
         joblib.load(module_path / "tests/supports.joblib")
