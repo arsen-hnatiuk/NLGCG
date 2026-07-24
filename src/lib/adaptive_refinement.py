@@ -70,7 +70,7 @@ class AdaptiveRefinement:
         c: float,
         q_0: np.ndarray,
         cvxpy_factor: float = 0.5,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> np.ndarray:
         t = time.perf_counter()
         cvxpy_len = len(vertices)
@@ -103,7 +103,7 @@ class AdaptiveRefinement:
             regularization="mixed",
         )
         ssn_solution = ssn.solve(
-            tol=self.machine_precision, u_0=u_0, do_logging=do_logging
+            tol=self.machine_precision, u_0=u_0, log_results=log_results
         )
         solutions = [ssn_solution, u_0]
         values = [self.f(K_support @ sol) + self.g(sol[:-1]) for sol in solutions]
@@ -114,7 +114,7 @@ class AdaptiveRefinement:
         new_vertices = vertices[new_coefs != 0].copy()
         new_coefs = new_coefs[new_coefs != 0].copy()
         ssn_time = time.perf_counter() - t
-        if do_logging:
+        if log_results:
             logging.info(
                 f"cvxpy: time {cvxpy_time:.3f} len {cvxpy_len}, ssn: {ssn_time:.3f} len {ssn_len}"
             )
@@ -260,7 +260,7 @@ class AdaptiveRefinement:
         vertices_dict: dict = {},
         vertices: np.ndarray = np.array([]),
         max_time: int = 1e6,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> tuple:
         t_0 = time.perf_counter()
         running_time = 0
@@ -349,7 +349,7 @@ class AdaptiveRefinement:
                     active_set_raw, axis=0, return_index=True
                 )
                 coefs = coefs_raw[unique_indices]
-                if do_logging:
+                if log_results:
                     logging.info(f"outer_time: {time.perf_counter()-t:.3f}")
 
                 del p_vals
@@ -360,7 +360,7 @@ class AdaptiveRefinement:
             # Determine iterate measure
             actives.append(len(active_set))
             active_set, coefs, c = self.finite_dimensional_step(
-                active_set, coefs, c, q, do_logging=do_logging
+                active_set, coefs, c, q, log_results=log_results
             )
             q = np.array(
                 self.grad_f(
@@ -372,7 +372,7 @@ class AdaptiveRefinement:
             times.append(time.perf_counter() - t_0)
             objective_values.append(self.j(u, c))
             supports.append(len(u.coefficients))
-            if do_logging:
+            if log_results:
                 logging.info(
                     f"{iter + 1}: cells: {len(cells_dict)}, support: {len(u.coefficients)}, objective: {self.j(u, c):.14E}"
                 )

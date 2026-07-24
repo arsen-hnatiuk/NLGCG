@@ -55,7 +55,7 @@ class Newton:
         self.machine_precision = 5e-14
         if mode == "globalized_lbfgs":
             self.solve = self.globalized_lbfgs
-        elif mode == "trust_region":
+        elif mode == "trust_region":  # Recommended
             self.solve = self.trust_region
         elif mode == "trust_region_ssn":
             self.solve = self.trust_region_ssn
@@ -98,7 +98,12 @@ class Newton:
             return 0
 
     def globalized_lbfgs(
-        self, k: int, params: np.ndarray, support: float, do_logging: bool
+        self,
+        k: int,
+        params: np.ndarray,
+        support: float,
+        log_results: bool,
+        full_trace: bool = False,
     ) -> np.ndarray:
         # https://arxiv.org/pdf/2401.03805
 
@@ -151,7 +156,7 @@ class Newton:
                 not np.abs(new_grad_direction)
                 <= -self.wolfe_powell_constant * grad_direction
             ):
-                if do_logging:
+                if log_results:
                     logging.info(
                         f"WP: {new_grad_direction >= self.wolfe_powell_constant*grad_direction}, strong WP: {np.abs(new_grad_direction)/grad_direction}"
                     )
@@ -170,14 +175,14 @@ class Newton:
                 gamma_minus = 0
                 gamma_plus = np.inf
 
-            if do_logging:
+            if log_results:
                 logging.info(
                     f"{k}, {s_iter}: Globalized LBFGS. choice: {choice}, support: {support}, sigma: {sigma:.2E}, grad: {grad_norm:.2E}, objective: {self.j_N(params_new):.14E}"
                 )
             params = params_new.copy()
             grad = grad_new.copy()
 
-        return params
+        return params, []
 
     def steihaug_cg(
         self,
@@ -234,9 +239,15 @@ class Newton:
         return q, i + 1, np.sqrt(r_r)
 
     def trust_region(
-        self, k: int, params: np.ndarray, support: float, do_logging: bool
+        self,
+        k: int,
+        params: np.ndarray,
+        support: float,
+        log_results: bool,
+        full_trace: bool = False,
     ) -> np.ndarray:
         # Nocedal/Wright: Numerical Optimization Sect. 7.1
+        full_information = []
         grad = self.grad_j_N(params)
         grad_norm = np.linalg.norm(grad)
         delta = min(0.01, 0.5 * np.sqrt(grad_norm))
@@ -245,6 +256,9 @@ class Newton:
         for s_iter in range(self.max_inner_loop):
             if grad_norm < 1e-12:
                 break
+
+            if full_trace:
+                full_information.append(params)
 
             hess_grad = jax.jvp(
                 self.grad_j_N,
@@ -301,11 +315,13 @@ class Newton:
                 j_params = j_params_plus
 
             del params_plus, grad_plus, grad_norm_plus, j_params_plus
-            if do_logging:
+            if log_results:
                 logging.info(
                     f"{k}, {s_iter}: Trust Region. choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, grad: {grad_norm:.2E}, objective {self.j_N(params):.14E}"
                 )
-        return params
+        if full_trace:
+            full_information.append(params)
+        return params, full_information
 
     def H(
         self,
@@ -401,7 +417,12 @@ class Newton:
         return q, i + 1, np.sqrt(r_r)
 
     def trust_region_ssn(
-        self, k: int, params: np.ndarray, support: float, do_logging: bool
+        self,
+        k: int,
+        params: np.ndarray,
+        support: float,
+        log_results: bool,
+        full_trace: bool = False,
     ) -> np.ndarray:
         # https://arxiv.org/pdf/2106.09340
         Lipschitz = 1
@@ -532,8 +553,8 @@ class Newton:
                     normal_map_norm = normal_map_norm_plus
                     D_diagonal = D_diagonal_plus.copy()
                     H_value = H_value_plus
-            if do_logging:
+            if log_results:
                 logging.info(
                     f"{k}, {s_iter}: choice: {choice}, support: {support}, SteihaugCG iters: {steihaug_iters}, delta: {delta:.2E}, rho: {rho:.2E}, normal_map: {normal_map_norm:.2E}, objective {self.j_N(prox_params):.14E}"
                 )
-        return prox_params
+        return prox_params, []

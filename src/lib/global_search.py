@@ -49,16 +49,20 @@ class GlobalSearch:
         self.newton_tolerance = newton_tolerance
         self.sampling_probabilty = sampling_probability
         self.sample_size = sample_size
-        if mode == "deterministic_adaptive":
+        if (
+            mode == "deterministic_adaptive"
+        ):  # Deterministic refinement of deterministic grid
             self.get_grid = self.deterministic_grid_adaptive
             self.stop_search = 3
-        if mode == "deterministic":
+        if mode == "deterministic":  # Standard deterministic method
             self.get_grid = self.deterministic_grid
             self.stop_search = 5
-        elif mode == "stochastic_adaptive":
+        elif (
+            mode == "stochastic_adaptive"
+        ):  # Stochastic refinement of stochastic grid, used in the paper
             self.get_grid = self.stochastic_grid_adaptive
             self.stop_search = 3
-        elif mode == "stochastic":
+        elif mode == "stochastic":  # Stochastic refinement of deterministic grid
             self.get_grid = self.stochastic_grid
             self.stop_search = 3
 
@@ -117,7 +121,7 @@ class GlobalSearch:
         epsilon: float,
         radius: float,
         temperature: float = 1.0,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> np.ndarray:
         grid = (
             np.array(
@@ -166,7 +170,7 @@ class GlobalSearch:
         epsilon: float,
         radius: float,
         temperature: float = 1.0,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> tuple:
         lipschitz_function = lambda x: np.linalg.norm(grad_p_u(x), axis=1)
         first_point = np.mean(self.Omega, axis=1)
@@ -191,12 +195,14 @@ class GlobalSearch:
         if success:
             grid = np.vstack([grid, np.array([best_point])])
             grid_vals = np.hstack((grid_vals, np.array([best_val])))
-            if do_logging:
+            if log_results:
                 logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
             return success, grid, grid_vals, best_point, best_val
 
         while mesh > self.newton_tolerance:
-            lipschitzs = self.batch_compute(grid, lipschitz_function)
+            lipschitzs = self.batch_compute(
+                grid, lipschitz_function, additional_factor=3
+            )
 
             relevant_indices = grid_vals + lipschitzs * mesh > best_val
             del lipschitzs
@@ -230,7 +236,7 @@ class GlobalSearch:
                 if success:
                     grid = np.vstack([new_grid, np.array([best_point])])
                     grid_vals = np.hstack((new_vals, np.array([best_val])))
-                    if do_logging:
+                    if log_results:
                         logging.info(f"Grid. {len(new_vals)} points, mesh: {mesh:.3E}")
                     return success, grid, grid_vals, best_point, best_val
 
@@ -238,10 +244,10 @@ class GlobalSearch:
             grid_vals = new_vals.copy()
             del new_grid
             del new_vals
-            if do_logging:
+            if log_results:
                 logging.info(f"Grid. {len(grid_vals)} points, mesh: {mesh:.3E}")
 
-        lipschitzs = self.batch_compute(grid, lipschitz_function)
+        lipschitzs = self.batch_compute(grid, lipschitz_function, additional_factor=3)
         relevant_indices = grid_vals + lipschitzs * mesh > best_val
         del lipschitzs
         grid = grid[relevant_indices]
@@ -259,7 +265,7 @@ class GlobalSearch:
         epsilon: float,
         radius: float,
         temperature: float = 1.0,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> tuple:
         grid = self.sample_domain(int(1e4), u)
         grid_vals = p_norm(grid)
@@ -336,8 +342,19 @@ class GlobalSearch:
         return value
 
     def batch_compute(
-        self, inputs: np.ndarray, func: Callable, batch_size: int = int(1e4)
+        self,
+        inputs: np.ndarray,
+        func: Callable,
+        batch_size: int = 0,
+        additional_factor: float = 1,
     ) -> np.ndarray:
+        if not batch_size:
+            batching_factor = additional_factor * (
+                self.len_target * self.Omega.shape[0] * (self.Omega.shape[0] + 1)
+                + 2 * self.Omega.shape[0]
+                + 1
+            )
+            batch_size = int(self.batching_constant // batching_factor)
         results = []
         for batch in gen_batches(len(inputs), batch_size):
             batch_results = func(inputs[batch])
@@ -385,7 +402,7 @@ class GlobalSearch:
         epsilon: float,
         radius: float,
         temperature: float = 1.0,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> tuple:
         lipschitz_function = lambda x: np.linalg.norm(grad_p_u(x), axis=1)
         success = False
@@ -410,17 +427,19 @@ class GlobalSearch:
         best_val = grid_vals[best_index]
         phi_val = max(self.M * (best_val - self.alpha), 0) + q_u
         success = phi_val >= epsilon
-        if do_logging:
+        if log_results:
             logging.info(f"Global Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}")
         if success:
             return success, grid, grid_vals, best_point, best_val
 
         while mesh > self.newton_tolerance or not sampled_local:
             if not len(lipschitzs):
-                lipschitzs = self.batch_compute(grid, lipschitz_function)
+                lipschitzs = self.batch_compute(
+                    grid, lipschitz_function, additional_factor=3
+                )
             else:
                 points_new_lipschitzs = self.batch_compute(
-                    points_new, lipschitz_function
+                    points_new, lipschitz_function, additional_factor=3
                 )
                 lipschitzs = np.append(lipschitzs, points_new_lipschitzs)
                 del points_new
@@ -439,8 +458,8 @@ class GlobalSearch:
             points_new = self.project_into_domain(points_new_raw)
 
             # Compute the |p| values of trial points
-            points_new_vals = p_norm(
-                points_new
+            points_new_vals = self.batch_compute(
+                points_new, p_norm
             )  # might contain invalid points (0 vals)
             valid_indices = points_new_vals > 0
             points_new = points_new[valid_indices]
@@ -450,7 +469,7 @@ class GlobalSearch:
             grid = np.vstack((grid, points_new))
             grid_vals = np.append(grid_vals, points_new_vals)
             mesh = mesh_reduction * mesh
-            if do_logging:
+            if log_results:
                 logging.info(
                     f"Local Sampling. {len(grid_vals)} points, mesh: {mesh:.3E}"
                 )
@@ -474,9 +493,13 @@ class GlobalSearch:
             sampled_local = True  # We want to enter the loop at least once
 
         if not len(lipschitzs):
-            lipschitzs = self.batch_compute(grid, lipschitz_function)
+            lipschitzs = self.batch_compute(
+                grid, lipschitz_function, additional_factor=3
+            )
         else:
-            points_new_lipschitzs = self.batch_compute(points_new, lipschitz_function)
+            points_new_lipschitzs = self.batch_compute(
+                points_new, lipschitz_function, additional_factor=3
+            )
             lipschitzs = np.append(lipschitzs, points_new_lipschitzs)
             del points_new
             del points_new_lipschitzs
@@ -496,9 +519,9 @@ class GlobalSearch:
         best_point: np.ndarray,
         best_val: float,
         q_u: float,
-        do_logging: bool,
+        log_results: bool,
     ) -> tuple:
-        if do_logging:
+        if log_results:
             logging.info(f"Newton start points: {len(grid_vals)}")
         success = False
         batching_factor = (
@@ -619,7 +642,7 @@ class GlobalSearch:
         p_u: Callable,
         radius: float,
         temperature: float = 1.0,
-        do_logging: bool = True,
+        log_results: bool = True,
     ) -> tuple:
         p_norm = lambda x: np.abs(np.array(np.nan_to_num(p_u(x))))
         grad_p = self.grad_p(u, c)
@@ -642,7 +665,7 @@ class GlobalSearch:
                 best_point,
                 best_val,
                 q_u,
-                do_logging,
+                log_results,
             )
             if success:
                 return self.post_process_global_search(
@@ -650,7 +673,7 @@ class GlobalSearch:
                 )
 
         success, grid, grid_vals, best_point, best_val = self.get_grid(
-            u, p_norm, grad_p, q_u, epsilon, radius, temperature, do_logging
+            u, p_norm, grad_p, q_u, epsilon, radius, temperature, log_results
         )
         if success:
             return self.post_process_global_search(
@@ -668,7 +691,7 @@ class GlobalSearch:
             best_point,
             best_val,
             q_u,
-            do_logging,
+            log_results,
         )
 
         return self.post_process_global_search(
