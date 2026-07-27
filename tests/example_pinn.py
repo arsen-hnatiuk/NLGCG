@@ -392,7 +392,11 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
             all_information,
-        ) = exp_nlgcg.solve(tol=5e-14, temperature=1, log_results=False)
+        ) = exp_nlgcg.solve(
+            tol=5e-14, temperature=1, log_results=False, optimum=optimum
+        )
+        del exp_nlgcg, true_function
+        jax.clear_caches()
         local_residuals = adapt_time(
             times_nlgcg,
             [obj - optimum for obj in objective_values_nlgcg],
@@ -403,7 +407,6 @@ def create_plots(Nrun: int = 10):
             nlgcg_converged += 1
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
-        del exp_nlgcg
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)

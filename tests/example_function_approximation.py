@@ -320,35 +320,24 @@ def create_plots(Nrun: int = 10):
     nlgcg_converged = 0
     for i in range(Nrun):
         logging.info(f"Running NLGCG (trial {i+1})")
-        success = False
-        u_nlgcg = Measure()
-        c_nlgcg = 0
-        times_nlgcg = []
-        supports_nlgcg = []
-        objective_values_nlgcg = []
-        while not success:
-            exp_nlgcg = define_nlgcg_experiment()
-            (
-                u_nlgcg,
-                c_nlgcg,
-                times_nlgcg_local,
-                supports_nlgcg_local,
-                inner_loop,
-                lgcg_lazy,
-                lgcg_total,
-                objective_values_nlgcg_local,
-                dropped_tot,
-                epsilons,
-                all_inormation,
-                success,
-            ) = exp_nlgcg.solve(
-                tol=5e-14, u_0=u_nlgcg, c_0=c_nlgcg, temperature=1, log_results=True
-            )
-            times_nlgcg += times_nlgcg_local
-            supports_nlgcg += supports_nlgcg_local
-            objective_values_nlgcg += objective_values_nlgcg_local
-            del exp_nlgcg
-            jax.clear_caches()
+        exp_nlgcg = define_nlgcg_experiment()
+        (
+            u_nlgcg,
+            c_nlgcg,
+            times_nlgcg,
+            supports_nlgcg,
+            inner_loop,
+            lgcg_lazy,
+            lgcg_total,
+            objective_values_nlgcg,
+            dropped_tot,
+            epsilons,
+            all_inormation,
+        ) = exp_nlgcg.solve(
+            tol=5e-14, temperature=1, log_results=False, optimum=optimum
+        )
+        del exp_nlgcg
+        jax.clear_caches()
         local_residuals = adapt_time(
             times_nlgcg,
             [obj - optimum for obj in objective_values_nlgcg],
