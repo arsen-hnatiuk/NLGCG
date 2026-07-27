@@ -12,6 +12,7 @@ from lib.global_search import GlobalSearch
 from lib.measure import Measure
 
 jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_compilation_cache", False)
 _ = jnp.zeros(0)
 
 logging.basicConfig(
@@ -658,9 +659,18 @@ class NLGCG:
                 )
             k += 1
 
+            if not k % 50:
+                jax.clear_caches()
+                break
+
         logging.info(
             f"NLGCG converged in {times[-1]:.3E} seconds with sparsity {len(u.support)} to objective value {objective_values[-1]:.14E}"
         )
+
+        if phi_numerical > tol:
+            success = False
+        else:
+            success = True
 
         return (
             u,
@@ -674,4 +684,5 @@ class NLGCG:
             dropped_tot,
             epsilons,
             all_information,
+            success,
         )
