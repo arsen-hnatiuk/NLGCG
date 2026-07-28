@@ -472,9 +472,10 @@ def create_plots(Nrun: int = 10):
     styles = ["-", "--", ":"]
     colors = ["tab:blue", "tab:orange", "tab:green"]
     for array, name, style, color in zip(
-        [nlgcg_residuals_mean, particle_residuals_mean, residuals_adaptive, colors],
+        [nlgcg_residuals_mean, particle_residuals_mean, residuals_adaptive],
         names,
         styles,
+        colors,
     ):
         ax.semilogy(
             resolution * np.arange(len(array)), array, style, label=name, color=color
@@ -524,9 +525,10 @@ def create_plots(Nrun: int = 10):
     names = ["NLGCG", "Particle Descent", "Adaptive Refinement"]
     styles = ["-", "--", ":"]
     for array, name, style, color in zip(
-        [nlgcg_supports_mean, particle_supports_mean, supports_adaptive, colors],
+        [nlgcg_supports_mean, particle_supports_mean, supports_adaptive],
         names,
         styles,
+        colors,
     ):
         ax.semilogx(np.arange(len(array)), array, style, label=name, color=color)
     ax.fill(

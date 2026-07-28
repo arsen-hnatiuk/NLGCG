@@ -489,6 +489,7 @@ class NLGCG:
         temperature: float = 1.0,
         log_results: bool = True,
         full_trace: bool = False,
+        optimum: float = 0,
     ) -> tuple:
         all_information = []
         self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
@@ -657,6 +658,9 @@ class NLGCG:
                     "============================================================================================="
                 )
             k += 1
+
+            if abs(objective_values[-1] - optimum) < 1e-10:
+                break
 
         logging.info(
             f"NLGCG converged in {times[-1]:.3E} seconds with sparsity {len(u.support)} to objective value {objective_values[-1]:.14E}"

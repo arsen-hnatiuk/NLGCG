@@ -508,6 +508,34 @@ class GlobalSearch:
         )
         return success, grid, grid_vals, best_point, best_val
 
+    def grad_steps(
+        self, points: np.ndarray, gradients: np.ndarray, p_norm: Callable
+    ) -> tuple:
+        # Armijo line search
+        beta = 0.5
+        sigma = 0.5
+        grad_norms = np.linalg.norm(gradients, axis=1) ** 2
+        p_vals = p_norm(points)
+        update_indices = np.array([True] * len(points))
+        new_points_plus = points.copy()
+        new_points_minus = points.copy()
+        for m in range(25):
+            local_grad = gradients[update_indices] * (beta**m)
+            new_points_plus[update_indices] = points[update_indices] + local_grad
+            new_points_minus[update_indices] = points[update_indices] - local_grad
+            projected_plus = self.project_into_domain(new_points_plus[update_indices])
+            projected_minus = self.project_into_domain(new_points_minus[update_indices])
+            p_vals_plus = p_norm(projected_plus)
+            p_vals_minus = p_norm(projected_minus)
+            p_vals_update = np.maximum(p_vals_plus, p_vals_minus)
+            descent_term = sigma * (beta**m) * grad_norms[update_indices]
+            update_indices[update_indices] = (
+                p_vals_update < p_vals[update_indices] + descent_term
+            )
+            if not any(update_indices):
+                break
+        return new_points_plus, new_points_minus
+
     def newton_steps(
         self,
         p_norm: Callable,
@@ -541,15 +569,26 @@ class GlobalSearch:
                 new_points_minus = np.zeros(batch_points.shape)
                 gradients = grad_p(batch_points)
                 hessians = hess_p(batch_points)
+                faulty_indices = []
+                faulty_points = []
+                faulty_gradients = []
                 for i, (point, gradient, hessian) in enumerate(
                     zip(batch_points, gradients, hessians)
                 ):
                     try:
                         d = np.linalg.solve(hessian, -gradient)  # Newton step
-                    except np.linalg.LinAlgError:
-                        d = 0.1 * gradient
-                    new_points_plus[i] = point + d
-                    new_points_minus[i] = point - d
+                        new_points_plus[i] = point + d
+                        new_points_minus[i] = point - d
+                    except np.linalg.LinAlgError:  # Gradient step with armijo
+                        faulty_indices.append(i)
+                        faulty_points.append(point)
+                        faulty_gradients.append(gradient)
+                if len(faulty_indices):
+                    faulty_new_points_plus, faulty_new_points_minus = self.grad_steps(
+                        np.array(faulty_points), np.array(faulty_gradients), p_norm
+                    )
+                    new_points_plus[np.array(faulty_indices)] = faulty_new_points_plus
+                    new_points_minus[np.array(faulty_indices)] = faulty_new_points_minus
                 projected_new_points_plus = self.project_into_domain(
                     new_points_plus
                 ).copy()
@@ -565,6 +604,45 @@ class GlobalSearch:
                     p_vals_minus > batch_vals
                 )
                 keep_optimizing_index = plus_bigges_index | minus_bigges_index
+
+                # Perform gradient ascent on those points that did not ascend
+                gradient_indices = np.logical_not(keep_optimizing_index)
+                if np.any(gradient_indices):
+                    gradient_new_points_plus, gradient_new_points_minus = (
+                        self.grad_steps(
+                            batch_points[gradient_indices],
+                            gradients[gradient_indices],
+                            p_norm,
+                        )
+                    )
+                    projected_gradient_new_points_plus = self.project_into_domain(
+                        gradient_new_points_plus
+                    ).copy()
+                    projected_new_points_plus[gradient_indices] = (
+                        projected_gradient_new_points_plus
+                    )
+                    projected_gradient_new_points_minus = self.project_into_domain(
+                        gradient_new_points_minus
+                    ).copy()
+                    projected_new_points_minus[gradient_indices] = (
+                        projected_gradient_new_points_minus
+                    )
+                    gradient_p_vals_plus = p_norm(projected_gradient_new_points_plus)
+                    p_vals_plus[gradient_indices] = gradient_p_vals_plus
+                    gradient_p_vals_minus = p_norm(projected_gradient_new_points_minus)
+                    p_vals_minus[gradient_indices] = gradient_p_vals_minus
+                    gradient_plus_bigges_index = (
+                        gradient_p_vals_plus > gradient_p_vals_minus
+                    ) & (gradient_p_vals_plus > batch_vals[gradient_indices])
+                    plus_bigges_index[gradient_indices] = gradient_plus_bigges_index
+                    gradient_minus_bigges_index = (
+                        gradient_p_vals_minus > gradient_p_vals_plus
+                    ) & (gradient_p_vals_minus > batch_vals[gradient_indices])
+                    minus_bigges_index[gradient_indices] = gradient_minus_bigges_index
+                    keep_optimizing_index[gradient_indices] = (
+                        gradient_plus_bigges_index | gradient_minus_bigges_index
+                    )
+
                 p_vals = np.maximum(np.maximum(p_vals_plus, p_vals_minus), batch_vals)
                 projected_new_points = batch_points.copy()
                 projected_new_points[plus_bigges_index] = projected_new_points_plus[

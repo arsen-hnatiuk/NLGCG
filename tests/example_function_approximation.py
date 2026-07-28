@@ -190,7 +190,7 @@ def define_nlgcg_experiment():
         constant_dim=len(target),
         kernel_dim=len(target),
         newton_tolerance=2e-2,
-        maax_radius=max_radius,
+        max_radius=max_radius,
     )
     return exp
 
@@ -333,7 +333,11 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
             all_inormation,
-        ) = exp_nlgcg.solve(tol=5e-14, temperature=1, log_results=False)
+        ) = exp_nlgcg.solve(
+            tol=5e-14, temperature=1, log_results=False, optimum=optimum
+        )
+        del exp_nlgcg
+        jax.clear_caches()
         local_residuals = adapt_time(
             times_nlgcg,
             [obj - optimum for obj in objective_values_nlgcg],
@@ -344,7 +348,6 @@ def create_plots(Nrun: int = 10):
             nlgcg_converged += 1
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
-        del exp_nlgcg
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
@@ -418,9 +421,10 @@ def create_plots(Nrun: int = 10):
     styles = ["-", "--", ":"]
     colors = ["tab:blue", "tab:orange", "tab:green"]
     for array, name, style, color in zip(
-        [nlgcg_residuals_mean, particle_residuals_mean, residuals_adaptive, colors],
+        [nlgcg_residuals_mean, particle_residuals_mean, residuals_adaptive],
         names,
         styles,
+        colors,
     ):
         ax.semilogy(
             resolution * np.arange(len(array)), array, style, label=name, color=color
@@ -470,9 +474,10 @@ def create_plots(Nrun: int = 10):
     names = ["NLGCG", "Particle Descent", "Adaptive Refinement"]
     styles = ["-", "--", ":"]
     for array, name, style, color in zip(
-        [nlgcg_supports_mean, particle_supports_mean, supports_adaptive, colors],
+        [nlgcg_supports_mean, particle_supports_mean, supports_adaptive],
         names,
         styles,
+        colors,
     ):
         ax.semilogx(np.arange(len(array)), array, style, label=name, color=color)
     ax.fill(
