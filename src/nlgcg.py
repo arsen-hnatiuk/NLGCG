@@ -500,10 +500,12 @@ class NLGCG:
         dropped_tot = 0
         initial_time = time.perf_counter()
         times = [time.perf_counter() - initial_time]
-        supports = [0]
+        supports = [len(u_0.coefficients)]
         inner_loop = [0]
         objective_values = [self.j(u_0, c_0)]
         epsilons = [epsilon]
+        us = [u_0.copy()]
+        cs = [c_0]
         lgcg_lazy = 0
         lgcg_total = 0
 
@@ -647,6 +649,8 @@ class NLGCG:
             inner_loop.append(0)
             objective_values.append(self.j(u, c))
             epsilons.append(epsilon)
+            us.append(u.copy())
+            cs.append(c)
             if log_results:
                 logging.info(
                     f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {phi_numerical:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.14E}"
@@ -667,8 +671,8 @@ class NLGCG:
         )
 
         return (
-            u,
-            c,
+            us,
+            cs,
             times,
             supports,
             inner_loop,

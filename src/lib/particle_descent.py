@@ -157,6 +157,8 @@ class ParticleDescent:
         objective_values = [self.j(u, c)]
         times = [time.perf_counter() - t_0]
         supports = [len(u.coefficients)]
+        us = [u_0.copy()]
+        all_cs = [c_0]
 
         min_a_parameter = 1e-8
 
@@ -289,6 +291,10 @@ class ParticleDescent:
 
             objective_values.append(obj)
             supports.append(Nparticle)
+            if not (it + 1) % 100:
+                us.append(u.copy())
+                all_cs.append(c)
+
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
                 success = False
@@ -326,4 +332,4 @@ class ParticleDescent:
             f"CPG exited after {times[-1]:.3E} seconds with sparsity {len(u.support)} and success {success} to objective value {objective_values[-1]:.14E}"
         )
 
-        return u, c, objective_values, supports, times, success
+        return us, all_cs, objective_values, supports, times, success

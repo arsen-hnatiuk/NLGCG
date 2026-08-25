@@ -143,9 +143,10 @@ class SSN:
         k = 0
         while psi_val > tol:
             if k > self.maximum_iterations:
-                logging.warning(
-                    f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {psi_val:.3E} achieved"
-                )
+                if log_results:
+                    logging.warning(
+                        f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {psi_val:.3E} achieved"
+                    )
                 if self.j(prox_q) <= initial_j:
                     return prox_q
                 else:
@@ -159,9 +160,10 @@ class SSN:
                 try:
                     direction = np.linalg.solve(left_hand + theta * Id, right_hand)
                 except np.linalg.LinAlgError:
-                    logging.warning(
-                        f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {psi_val:.3E} achieved"
-                    )
+                    if log_results:
+                        logging.warning(
+                            f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {psi_val:.3E} achieved"
+                        )
                     if self.j(prox_q) <= initial_j:
                         return prox_q
                     else:

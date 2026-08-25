@@ -16,7 +16,7 @@ class Measure:
         coefficients: np.ndarray = np.array([]),
     ) -> None:
         if len(matrix):
-            # Supports and coefficients are encodes in a single matrix
+            # Supports and coefficients are encoded in a single matrix
             if len(matrix.shape) == 1:
                 matrix = matrix.reshape(1, -1)
             coefficients = matrix[:, 0]

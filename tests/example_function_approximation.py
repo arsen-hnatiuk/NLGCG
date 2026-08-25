@@ -36,6 +36,7 @@ d = omega_space.shape[0]
 variance_exponent = 0.1
 alpha = 1e-3
 observation_resolution = 20
+test_resolution = 100
 endpoint = False
 max_radius = (Omega[0][1] - Omega[0][0]) / 100
 true_function = lambda x: np.minimum(1 - np.abs(x[:, 0]), 1 - np.abs(x[:, 1]))
@@ -60,6 +61,23 @@ def define_experiment():
         .reshape(len(omega_space), -1)
         .T
     )
+    test_observations = (
+        np.array(
+            np.meshgrid(
+                *(
+                    np.linspace(
+                        bound[0] + 1e-5,
+                        bound[1] - np.sqrt(3) * 1e-5,
+                        test_resolution,
+                        endpoint=endpoint,
+                    )
+                    for bound in omega_space
+                )
+            )
+        )
+        .reshape(len(omega_space), -1)
+        .T
+    )
 
     @jax.jit
     def singleton_kernel(omega: np.ndarray):
@@ -71,9 +89,20 @@ def define_experiment():
         )
         return outer
 
+    def test_singleton_kernel(omega: np.ndarray):
+        sigma = omega[0]
+        x = omega[1:]
+        inner = -jnp.sum((x - test_observations) ** 2, axis=1) / (2 * sigma**2)
+        outer = (jnp.exp(inner) * sigma ** (variance_exponent)) / (
+            jnp.sqrt(2 * jnp.pi) ** d
+        )
+        return outer
+
     kernel = jax.vmap(singleton_kernel)
+    test_kernel = jax.vmap(test_singleton_kernel)
 
     target = true_function(observations)
+    test_target = true_function(test_observations)
 
     @jax.jit
     def g(w: np.ndarray) -> float:
@@ -82,6 +111,9 @@ def define_experiment():
     @jax.jit
     def f(y: np.ndarray) -> float:
         return 0.5 * jnp.sum((y - target) ** 2)
+
+    def test_f(y: np.ndarray) -> float:
+        return 0.5 * jnp.sum((y - test_target) ** 2)
 
     grad_f = jax.jit(jax.grad(f))
     hess_f = jax.jit(jax.hessian(f))
@@ -145,6 +177,9 @@ def define_experiment():
         grad_p,
         hess_p,
         grad_j_N,
+        test_f,
+        test_kernel,
+        test_target,
     )
 
 
@@ -166,6 +201,9 @@ def define_nlgcg_experiment():
         grad_p,
         hess_p,
         grad_j_N,
+        test_f,
+        test_kernel,
+        test_target,
     ) = define_experiment()
     exp = NLGCG(
         target=target,
@@ -192,7 +230,7 @@ def define_nlgcg_experiment():
         newton_tolerance=2e-2,
         max_radius=max_radius,
     )
-    return exp
+    return exp, test_f, test_kernel, test_target
 
 
 def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6):
@@ -213,6 +251,9 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         grad_p,
         hess_p,
         grad_j_N,
+        test_f,
+        test_kernel,
+        test_target,
     ) = define_experiment()
     exp = ParticleDescent(
         m=m,
@@ -233,7 +274,7 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         hess_f=hess_f,
         residual_tolerance=5e-14,
     )
-    return exp
+    return exp, test_f, test_kernel, test_target
 
 
 def define_adaptive_refinement_experiment():
@@ -254,6 +295,9 @@ def define_adaptive_refinement_experiment():
         grad_p,
         hess_p,
         grad_j_N,
+        test_f,
+        test_kernel,
+        test_target,
     ) = define_experiment()
     exp = AdaptiveRefinement(
         observations=observations,
@@ -261,7 +305,7 @@ def define_adaptive_refinement_experiment():
         p=p,
         grad_p=grad_p,
         hess_p=hess_p,
-        Omega=Omega,
+        Omega=Omega + 1e-5,
         kernel=kernel,
         constant_dim=len(target),
         kernel_dim=len(target),
@@ -273,7 +317,7 @@ def define_adaptive_refinement_experiment():
         hess_f=hess_f,
         ssn_steps=1000,
     )
-    return exp
+    return exp, test_f, test_kernel, test_target
 
 
 def adapt_time(times, residuals, frame=100, resolution=1):
@@ -295,7 +339,6 @@ def adapt_time(times, residuals, frame=100, resolution=1):
             to_return.append(last_res)
         if t * resolution >= times[-1]:
             break
-    to_return.append(residuals[-1])
     return to_return
 
 
@@ -311,19 +354,20 @@ def bring_to_same_length(arrays):
 
 
 def create_plots(Nrun: int = 10):
-    resolution = 0.1  # time resolution for the plots (seconds)
+    resolution = 1  # time resolution for the plots (seconds)
     frame_size = 1000  # Time frame tracked for the residuals (seconds)
 
     # NLGCG
     nlgcg_residuals = []
+    nlgcg_tests = []
     nlgcg_supports = []
     nlgcg_converged = 0
     for i in range(Nrun):
         logging.info(f"Running NLGCG (trial {i+1})")
-        exp_nlgcg = define_nlgcg_experiment()
+        exp_nlgcg, test_f, test_kernel, test_target = define_nlgcg_experiment()
         (
-            u_nlgcg,
-            c_nlgcg,
+            us_nlgcg,
+            cs_nlgcg,
             times_nlgcg,
             supports_nlgcg,
             inner_loop,
@@ -336,7 +380,14 @@ def create_plots(Nrun: int = 10):
         ) = exp_nlgcg.solve(
             tol=5e-14, temperature=1, log_results=False, optimum=optimum
         )
-        del exp_nlgcg
+        test_values_nlgcg = [
+            test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
+            for u, c, in zip(us_nlgcg, cs_nlgcg)
+        ]
+        best_test_iteration = np.argmin(test_values_nlgcg)
+        u_nlgcg = us_nlgcg[best_test_iteration]
+        c_nlgcg = cs_nlgcg[best_test_iteration]
+        del exp_nlgcg, us_nlgcg, cs_nlgcg
         jax.clear_caches()
         local_residuals = adapt_time(
             times_nlgcg,
@@ -344,28 +395,36 @@ def create_plots(Nrun: int = 10):
             frame=frame_size,
             resolution=resolution,
         )
+        local_test_values = adapt_time(
+            times_nlgcg, test_values_nlgcg, frame=frame_size, resolution=resolution
+        )
         if local_residuals[-1] < 1e-5:
             nlgcg_converged += 1
         nlgcg_residuals.append(local_residuals)
+        nlgcg_tests.append(local_test_values)
         nlgcg_supports.append(supports_nlgcg)
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
+    nlgcg_tests_mean = np.mean(bring_to_same_length(nlgcg_tests), axis=0)
     nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
     nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
 
     # Particle Descent Stochastic
     particle_residuals = []
+    particle_tests = []
     particle_supports = []
     particle_converged = 0
     for i in range(Nrun):
         success = False
         while not success:
             logging.info(f"Running Particle descent (trial {i+1})")
-            exp_particle = define_particle_descent_experiment()
+            exp_particle, test_f, test_kernel, test_target = (
+                define_particle_descent_experiment()
+            )
             (
-                u,
-                c,
+                us_particle,
+                cs_particle,
                 objective_values_particle,
                 supports_particle,
                 times_particle,
@@ -373,45 +432,84 @@ def create_plots(Nrun: int = 10):
             ) = exp_particle.solve(
                 max_time=frame_size, mode="exponential", log_results=False
             )
+            test_values_particle_raw = [
+                test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
+                for u, c, in zip(us_particle, cs_particle)
+            ]
+            best_test_iteration = np.argmin(test_values_particle_raw)
+            u_particle = us_particle[best_test_iteration]
+            c_particle = cs_particle[best_test_iteration]
+            del exp_particle, us_particle, cs_particle
+            jax.clear_caches()
         local_residuals = adapt_time(
             times_particle,
             [obj - optimum for obj in objective_values_particle],
             frame=frame_size,
             resolution=resolution,
         )
+        # For particle descent, the test values are recorded every 100 iterations
+        test_values_particle = []
+        for test_val in test_values_particle_raw:
+            test_values_particle += [test_val] * 100
+        test_values_particle = test_values_particle[: len(times_particle)]
+        local_test_values = adapt_time(
+            times_particle,
+            test_values_particle,
+            frame=frame_size,
+            resolution=resolution,
+        )
         if local_residuals[-1] < 1e-5:
             particle_converged += 1
         particle_residuals.append(local_residuals)
+        particle_tests.append(local_test_values)
         particle_supports.append(supports_particle)
-        del exp_particle
     logging.info(
         f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
     )
 
     particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
+    particle_tests_mean = np.mean(bring_to_same_length(particle_tests), axis=0)
     particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
     particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
 
     # Adaptive refinement
     logging.info("Running adaptive refinement")
-    exp_adaptive = define_adaptive_refinement_experiment()
+    exp_adaptive, test_f, test_kernel, test_target = (
+        define_adaptive_refinement_experiment()
+    )
     (
         cells_dict,
         vertices_dict,
         vertices,
-        u,
+        us_adaptive,
+        cs_adaptive,
         objective_values_adaptive,
         times_adaptive,
         actives,
         supports_adaptive,
     ) = exp_adaptive.solve(max_time=frame_size, log_results=False)
+    test_values_adaptive = [
+        test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
+        for u, c, in zip(us_adaptive, cs_adaptive)
+    ]
+    best_test_iteration = np.argmin(
+        np.array(test_values_adaptive)[np.array(times_adaptive) < frame_size]
+    )
+    u_adaptive = us_adaptive[best_test_iteration]
+    c_adaptive = cs_adaptive[best_test_iteration]
     residuals_adaptive = adapt_time(
         times_adaptive,
         [obj - optimum for obj in objective_values_adaptive],
         frame=frame_size,
         resolution=resolution,
     )
-    del exp_adaptive
+    test_values_adaptive = adapt_time(
+        times_adaptive,
+        test_values_adaptive,
+        frame=frame_size,
+        resolution=resolution,
+    )
+    del exp_adaptive, us_adaptive, cs_adaptive
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 
@@ -467,6 +565,60 @@ def create_plots(Nrun: int = 10):
     # plt.xlim(0, 100)
     ax.legend()
     plt.savefig(results_dir / "residuals.png", bbox_inches="tight")
+    plt.close()
+
+    # Plot test scores
+    fig, ax = plt.subplots(figsize=(5, 4))
+    names = ["NLGCG", "Particle Descent", "Adaptive Refinement"]
+    styles = ["-", "--", ":"]
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+    for array, name, style, color in zip(
+        [nlgcg_tests_mean, particle_tests_mean, test_values_adaptive],
+        names,
+        styles,
+        colors,
+    ):
+        ax.semilogy(
+            resolution * np.arange(len(array)), array, style, label=name, color=color
+        )
+    ax.fill(
+        np.hstack(
+            (
+                resolution * np.arange(len(particle_tests_mean)),
+                resolution * np.arange(len(particle_tests_mean))[::-1],
+            )
+        ),
+        np.hstack(
+            (
+                np.max(bring_to_same_length(particle_tests), axis=0),
+                np.min(bring_to_same_length(particle_tests), axis=0)[::-1],
+            )
+        ),
+        "tab:orange",
+        alpha=0.3,
+    )
+    ax.fill(
+        np.hstack(
+            (
+                resolution * np.arange(len(nlgcg_tests_mean)),
+                resolution * np.arange(len(nlgcg_tests_mean))[::-1],
+            )
+        ),
+        np.hstack(
+            (
+                np.max(bring_to_same_length(nlgcg_tests), axis=0),
+                np.min(bring_to_same_length(nlgcg_tests), axis=0)[::-1],
+            )
+        ),
+        "tab:blue",
+        alpha=0.3,
+    )
+    plt.ylabel("MSE on test set")
+    plt.xlabel("Time (s)")
+    plt.ylim(1e-1, 1e0)
+    # plt.xlim(0, 100)
+    ax.legend()
+    plt.savefig(results_dir / "test_values.png", bbox_inches="tight")
     plt.close()
 
     # Plot supports
@@ -570,42 +722,55 @@ def create_plots(Nrun: int = 10):
         outer = (jnp.exp(inner) * sigma**variance_exponent) / (np.sqrt(2 * np.pi) ** d)
         return outer
 
-    pred_vals = u_nlgcg.duality_pairing(jax.vmap(plot_kernel)).reshape(
+    pred_vals_nlgcg = u_nlgcg.duality_pairing(jax.vmap(plot_kernel)).reshape(
         (resolution, resolution)
     ) + c_nlgcg * np.ones((resolution, resolution))
+    pred_vals_particle = u_particle.duality_pairing(jax.vmap(plot_kernel)).reshape(
+        (resolution, resolution)
+    ) + c_particle * np.ones((resolution, resolution))
+    pred_vals_adaptive = u_adaptive.duality_pairing(jax.vmap(plot_kernel)).reshape(
+        (resolution, resolution)
+    ) + c_adaptive * np.ones((resolution, resolution))
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
-    contour1 = ax1.contourf(x, y, vals, levels=100)
-    fig.colorbar(contour1, ax=ax1)
-    contour2 = ax2.contourf(x, y, pred_vals, levels=100)
-    fig.colorbar(contour2, ax=ax2)
-    contour3 = ax3.contourf(x, y, np.abs(pred_vals - vals), levels=100)
-    fig.colorbar(contour3, ax=ax3)
-    for i, x in enumerate(u_nlgcg.support):
-        if u_nlgcg.coefficients[i] < 0:
-            color = "b"
-        else:
-            color = "r"
-        ax2.add_patch(
-            plt.Circle((x[1], x[2]), radius=x[0], color=color, fill=False, alpha=0.5)
+    for pred_vals, name, u in zip(
+        [pred_vals_nlgcg, pred_vals_particle, pred_vals_adaptive],
+        ["NLGCG", "Particle Descent", "Adaptive Refinement"],
+        [u_nlgcg, u_particle, u_adaptive],
+    ):
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
+        contour1 = ax1.contourf(x, y, vals, levels=100)
+        fig.colorbar(contour1, ax=ax1)
+        contour2 = ax2.contourf(x, y, pred_vals, levels=100)
+        fig.colorbar(contour2, ax=ax2)
+        contour3 = ax3.contourf(x, y, np.abs(pred_vals - vals), levels=100)
+        fig.colorbar(contour3, ax=ax3)
+        for i, point in enumerate(u.support):
+            if u.coefficients[i] < 0:
+                color = "b"
+            else:
+                color = "r"
+            ax2.add_patch(
+                plt.Circle(
+                    (point[1], point[2]),
+                    radius=point[0],
+                    color=color,
+                    fill=False,
+                    alpha=0.5,
+                )
+            )
+        ax1.set_xlim(omega_space[0][0], omega_space[0][1])
+        ax1.set_ylim(omega_space[1][0], omega_space[1][1])
+        ax2.set_xlim(omega_space[0][0], omega_space[0][1])
+        ax2.set_ylim(omega_space[1][0], omega_space[1][1])
+        ax3.set_xlim(omega_space[0][0], omega_space[0][1])
+        ax3.set_ylim(omega_space[1][0], omega_space[1][1])
+        ax1.set_xlabel("True function")
+        ax2.set_xlabel(f"Predicted function {name}")
+        ax3.set_xlabel("Absolute error in prediction")
+        plt.savefig(
+            results_dir / f"reconstruction_error_{name}.png", bbox_inches="tight"
         )
-        # ax3.add_patch(
-        #     plt.Circle((x[1], x[2]), radius=x[0], color=color, fill=False, alpha=0.5)
-        # )
-    ax1.set_xlim(omega_space[0][0], omega_space[0][1])
-    ax1.set_ylim(omega_space[1][0], omega_space[1][1])
-    ax2.set_xlim(omega_space[0][0], omega_space[0][1])
-    ax2.set_ylim(omega_space[1][0], omega_space[1][1])
-    ax3.set_xlim(omega_space[0][0], omega_space[0][1])
-    ax3.set_ylim(omega_space[1][0], omega_space[1][1])
-    ax1.set_xlabel("True function")
-    ax2.set_xlabel("Predicted function")
-    ax3.set_xlabel("Absolute error in prediction")
-    plt.savefig(results_dir / "reconstruction_error.png", bbox_inches="tight")
-    plt.close()
-    logging.error(
-        f"Function reconstruction error L2: {np.linalg.norm(pred_vals-vals)/len(vals)}, Linf: {np.max(np.abs(pred_vals-vals))}"
-    )
+        plt.close()
 
 
 if __name__ == "__main__":

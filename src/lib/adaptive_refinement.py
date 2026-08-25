@@ -185,8 +185,8 @@ class AdaptiveRefinement:
     def initiate(self) -> tuple:
         first_cell_name = "0"
         first_cell = np.zeros(self.Omega.shape)
-        first_cell[:, 0] = self.Omega[:, 0] + 1e-3
-        first_cell[:, 1] = self.Omega[:, 1] - 1e-3
+        first_cell[:, 0] = self.Omega[:, 0]  # + 1e-4
+        first_cell[:, 1] = self.Omega[:, 1]  # - 1e-4
         vertices = first_cell[np.arange(len(first_cell)), self.split_configurations]
         cells_dict = {first_cell_name: first_cell}
         vertices_dict = {first_cell_name: np.arange(len(vertices))}
@@ -278,6 +278,8 @@ class AdaptiveRefinement:
         times = [time.perf_counter() - t_0]
         actives = [len(active_set)]
         supports = [len(u.coefficients)]
+        us = [u.copy()]
+        cs = [c]
         objective_values = [self.j(u, c)]
         for iter in range(max_iters):
             inner_t = time.perf_counter()
@@ -372,6 +374,8 @@ class AdaptiveRefinement:
             times.append(time.perf_counter() - t_0)
             objective_values.append(self.j(u, c))
             supports.append(len(u.coefficients))
+            us.append(u.copy())
+            cs.append(c)
             if log_results:
                 logging.info(
                     f"{iter + 1}: cells: {len(cells_dict)}, support: {len(u.coefficients)}, objective: {self.j(u, c):.14E}"
@@ -391,7 +395,8 @@ class AdaptiveRefinement:
             cells_dict,
             vertices_dict,
             vertices,
-            u,
+            us,
+            cs,
             objective_values,
             times,
             actives,

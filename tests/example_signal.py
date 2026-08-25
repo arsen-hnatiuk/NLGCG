@@ -264,8 +264,8 @@ def create_particle_matrix():
     # NLGCG
     exp, p = define_nlgcg_experiment()
     (
-        u,
-        c,
+        us,
+        cs,
         times,
         supports,
         inner_loop,
@@ -275,6 +275,8 @@ def create_particle_matrix():
         dropped_tot,
         epsilons,
     ) = exp.solve(tol=5e-14, temperature=0.1)
+    u = us[-1]
+    c = cs[-1]
 
     print(
         f"found optimimum with value {objective_values[-1]} (difference to ref {optimum} is {objective_values[-1] - optimum})"
@@ -301,7 +303,7 @@ def create_particle_matrix():
 
         # run Nruns to determine success probability
         for it in range(Nruns):
-            u, c, objective_values, supports, times, success = exp.solve(
+            us, cs, objective_values, supports, times, success = exp.solve(
                 max_iters=int(1e6), max_time=5 * 60, mode="uniform"
             )
 
@@ -349,7 +351,6 @@ def adapt_time(times, residuals, frame=100, resolution=1):
             to_return.append(last_res)
         if t * resolution >= times[-1]:
             break
-    to_return.append(residuals[-1])
     return to_return
 
 
@@ -376,8 +377,8 @@ def create_plots(Nrun: int = 10):
         logging.info(f"Running NLGCG (trial {i+1})")
         exp_nlgcg, p = define_nlgcg_experiment()
         (
-            u_opt,
-            c_opt,
+            us_nlgcg,
+            cs_nlgcg,
             times_nlgcg,
             supports_nlgcg,
             inner_loop,
@@ -398,7 +399,9 @@ def create_plots(Nrun: int = 10):
             nlgcg_converged += 1
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
-        del exp_nlgcg
+        u_opt = us_nlgcg[-1]
+        c_opt = cs_nlgcg[-1]
+        del exp_nlgcg, us_nlgcg, cs_nlgcg
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
@@ -415,8 +418,8 @@ def create_plots(Nrun: int = 10):
             logging.info(f"Running Particle descent (trial {i+1})")
             exp_particle = define_particle_descent_experiment()
             (
-                u,
-                c,
+                us_particle,
+                cs_particle,
                 objective_values_particle,
                 supports_particle,
                 times_particle,
@@ -424,6 +427,7 @@ def create_plots(Nrun: int = 10):
             ) = exp_particle.solve(
                 max_time=frame_size, mode="uniform", log_results=False
             )
+            del exp_particle, us_particle, cs_particle
         local_residuals = adapt_time(
             times_particle,
             [obj - optimum for obj in objective_values_particle],
@@ -434,7 +438,6 @@ def create_plots(Nrun: int = 10):
             particle_converged += 1
         particle_residuals.append(local_residuals)
         particle_supports.append(supports_particle)
-        del exp_particle
     logging.info(
         f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
     )
@@ -450,7 +453,8 @@ def create_plots(Nrun: int = 10):
         cells_dict,
         vertices_dict,
         vertices,
-        u,
+        us_adaptive,
+        cs_adaptive,
         objective_values_adaptive,
         times_adaptive,
         actives,
@@ -462,7 +466,7 @@ def create_plots(Nrun: int = 10):
         frame=frame_size,
         resolution=resolution,
     )
-    del exp_adaptive
+    del exp_adaptive, us_adaptive, cs_adaptive
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 

@@ -215,7 +215,6 @@ def adapt_time(times, residuals, frame=100, resolution=1):
             to_return.append(last_res)
         if t * resolution >= times[-1]:
             break
-    to_return.append(residuals[-1])
     return to_return
 
 
@@ -242,8 +241,8 @@ def create_plots(Nrun: int = 10):
         logging.info(f"Running NLGCG (trial {i+1})")
         exp_nlgcg = define_nlgcg_experiment()
         (
-            u_nlgcg,
-            c_nlgcg,
+            us_nlgcg,
+            cs_nlgcg,
             times_nlgcg,
             supports_nlgcg,
             inner_loop,
@@ -264,7 +263,8 @@ def create_plots(Nrun: int = 10):
             nlgcg_converged += 1
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
-        del exp_nlgcg
+        u_nlgcg = us_nlgcg[-1]
+        del exp_nlgcg, us_nlgcg, cs_nlgcg
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
