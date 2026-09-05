@@ -3,6 +3,7 @@ import os
 import jax
 import jax.numpy as jnp
 import logging
+import pickle
 import sys
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -113,7 +114,7 @@ def define_experiment():
         return 0.5 * jnp.sum((y - target) ** 2)
 
     def test_f(y: np.ndarray) -> float:
-        return 0.5 * jnp.sum((y - test_target) ** 2)
+        return 0.5 * jnp.sum((y - test_target) ** 2) / len(test_target)
 
     grad_f = jax.jit(jax.grad(f))
     hess_f = jax.jit(jax.hessian(f))
@@ -615,7 +616,7 @@ def create_plots(Nrun: int = 10):
     )
     plt.ylabel("MSE on test set")
     plt.xlabel("Time (s)")
-    plt.ylim(1e-1, 1e0)
+    # plt.ylim(1e-5, 1e-0)
     # plt.xlim(0, 100)
     ax.legend()
     plt.savefig(results_dir / "test_values.png", bbox_inches="tight")
@@ -707,6 +708,54 @@ def create_plots(Nrun: int = 10):
     plt.savefig(results_dir / "coefficients.png", bbox_inches="tight")
     plt.close()
 
+    # for u, c, name in zip(
+    #     [u_nlgcg, u_particle, u_adaptive],
+    #     [c_nlgcg, c_particle, c_adaptive],
+    #     ["solution_nlgcg", "solution_particle", "solution_adaptive"],
+    # ):
+    #     with open(f"{results_dir}/{name}.pkl", "wb") as file:
+    #         pickle.dump((u, c), file)
+
+    # with open(results_dir / "solution_nlgcg.pkl", "rb") as file:
+    #     u_nlgcg, c_nlgcg = pickle.load(file)
+    # with open(results_dir / "solution_particle.pkl", "rb") as file:
+    #     u_particle, c_particle = pickle.load(file)
+    # with open(results_dir / "solution_adaptive.pkl", "rb") as file:
+    #     u_adaptive, c_adaptive = pickle.load(file)
+
+    # Plot pruning of Particle Descent
+    thresholds = np.linspace(0, 0.01, 26)
+    max_coef = np.max(np.abs(u_particle.coefficients))
+    pruned_test_vals = []
+    pruned_support_sizes = []
+    for threshold in thresholds:
+        pruned_indices = np.abs(u_particle.coefficients) > threshold * max_coef
+        pruned_support_sizes.append(np.sum(pruned_indices))
+        pruned_u = Measure(
+            support=u_particle.support[pruned_indices],
+            coefficients=u_particle.coefficients[pruned_indices],
+        )
+        pruned_test_vals.append(
+            test_f(
+                pruned_u.duality_pairing(test_kernel)
+                + c_particle * np.ones(test_target.shape)
+            )
+        )
+    fig, ax1 = plt.subplots(figsize=(5, 4))
+    ax2 = ax1.twinx()
+    (p1,) = ax1.semilogy(
+        thresholds, pruned_test_vals, "-", label="MSE on test set", color="darkred"
+    )
+    (p2,) = ax2.plot(
+        thresholds, pruned_support_sizes, "-", label="Support size", color="lightpink"
+    )
+    ax1.set_ylabel("MSE on test set")
+    ax2.set_ylabel("Support size")
+    ax1.set_xlabel("Pruning threshold")
+    ax1.legend(handles=[p1, p2], loc="upper center")
+    plt.savefig(results_dir / "particle_pruning.png", bbox_inches="tight")
+    plt.close()
+
     # Plot the function with reconstruction error
     resolution = 100
     a_1 = np.linspace(omega_space[0][0], omega_space[0][1], resolution, endpoint=False)
@@ -732,24 +781,30 @@ def create_plots(Nrun: int = 10):
         (resolution, resolution)
     ) + c_adaptive * np.ones((resolution, resolution))
 
-    for pred_vals, name, u in zip(
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    ax1 = axes[0, 0]
+    ax2 = axes[0, 1]
+    ax3 = axes[1, 0]
+    ax4 = axes[1, 1]
+    contour1 = ax1.contourf(x, y, vals, levels=100)
+    fig.colorbar(contour1, ax=ax1)
+    ax1.set_xlim(omega_space[0][0], omega_space[0][1])
+    ax1.set_ylim(omega_space[1][0], omega_space[1][1])
+    ax1.set_xlabel("True function")
+    for pred_vals, name, u, ax in zip(
         [pred_vals_nlgcg, pred_vals_particle, pred_vals_adaptive],
         ["NLGCG", "Particle Descent", "Adaptive Refinement"],
         [u_nlgcg, u_particle, u_adaptive],
+        [ax2, ax3, ax4],
     ):
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
-        contour1 = ax1.contourf(x, y, vals, levels=100)
-        fig.colorbar(contour1, ax=ax1)
-        contour2 = ax2.contourf(x, y, pred_vals, levels=100)
-        fig.colorbar(contour2, ax=ax2)
-        contour3 = ax3.contourf(x, y, np.abs(pred_vals - vals), levels=100)
-        fig.colorbar(contour3, ax=ax3)
+        contour = ax.contourf(x, y, pred_vals, levels=100)
+        fig.colorbar(contour, ax=ax)
         for i, point in enumerate(u.support):
             if u.coefficients[i] < 0:
                 color = "b"
             else:
                 color = "r"
-            ax2.add_patch(
+            ax.add_patch(
                 plt.Circle(
                     (point[1], point[2]),
                     radius=point[0],
@@ -758,19 +813,29 @@ def create_plots(Nrun: int = 10):
                     alpha=0.5,
                 )
             )
-        ax1.set_xlim(omega_space[0][0], omega_space[0][1])
-        ax1.set_ylim(omega_space[1][0], omega_space[1][1])
-        ax2.set_xlim(omega_space[0][0], omega_space[0][1])
-        ax2.set_ylim(omega_space[1][0], omega_space[1][1])
-        ax3.set_xlim(omega_space[0][0], omega_space[0][1])
-        ax3.set_ylim(omega_space[1][0], omega_space[1][1])
-        ax1.set_xlabel("True function")
-        ax2.set_xlabel(f"Predicted function {name}")
-        ax3.set_xlabel("Absolute error in prediction")
-        plt.savefig(
-            results_dir / f"reconstruction_error_{name}.png", bbox_inches="tight"
-        )
-        plt.close()
+        ax.set_xlim(omega_space[0][0], omega_space[0][1])
+        ax.set_ylim(omega_space[1][0], omega_space[1][1])
+        ax.set_xlabel(f"Predicted function {name}")
+    plt.savefig(results_dir / f"predictions.png", bbox_inches="tight")
+    plt.close()
+
+    logging.getLogger().setLevel(logging.INFO)  # Reinstate logging
+
+    # Best test value
+    test_value_nlgcg = test_f(
+        u_nlgcg.duality_pairing(test_kernel) + c_nlgcg * np.ones(test_target.shape)
+    )
+    test_value_particle = test_f(
+        u_particle.duality_pairing(test_kernel)
+        + c_particle * np.ones(test_target.shape)
+    )
+    test_value_adaptive = test_f(
+        u_adaptive.duality_pairing(test_kernel)
+        + c_adaptive * np.ones(test_target.shape)
+    )
+    logging.info(
+        f"Best test value NLGCG: {test_value_nlgcg:.3E}, Particle Descent: {test_value_particle:.3E}, Adaptive Refinement: {test_value_adaptive:.3E}"
+    )
 
 
 if __name__ == "__main__":

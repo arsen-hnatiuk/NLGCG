@@ -3,6 +3,7 @@ import os
 import jax
 import jax.numpy as jnp
 import logging
+import pickle
 import sys
 import gc
 import matplotlib.pyplot as plt
@@ -709,7 +710,7 @@ def create_plots(Nrun: int = 10):
         "tab:blue",
         alpha=0.3,
     )
-    plt.ylabel("MSE on test set")
+    plt.ylabel("Loss on test set")
     plt.xlabel("Time (s)")
     # plt.ylim(1e-10, 100)
     # plt.xlim(0, 100)
@@ -773,6 +774,57 @@ def create_plots(Nrun: int = 10):
     plt.savefig(results_dir / "supports.png", bbox_inches="tight")
     plt.close()
 
+    # for u, c, name in zip(
+    #     [u_nlgcg, u_particle],
+    #     [c_nlgcg, c_particle],
+    #     ["solution_nlgcg", "solution_particle"],
+    # ):
+    #     with open(f"{results_dir}/{name}.pkl", "wb") as file:
+    #         pickle.dump((u, c), file)
+
+    # with open(results_dir / "solution_nlgcg.pkl", "rb") as file:
+    #     u_nlgcg, c_nlgcg = pickle.load(file)
+    # with open(results_dir / "solution_particle.pkl", "rb") as file:
+    #     u_particle, c_particle = pickle.load(file)
+
+    # Plot pruning of Particle Descent
+    thresholds = np.linspace(0, 0.0001, 26)
+    max_coef = np.max(np.abs(u_particle.coefficients))
+    pruned_test_vals = []
+    pruned_support_sizes = []
+    for threshold in thresholds:
+        pruned_indices = np.abs(u_particle.coefficients) > threshold * max_coef
+        pruned_support_sizes.append(np.sum(pruned_indices))
+        pruned_u = Measure(
+            support=u_particle.support[pruned_indices],
+            coefficients=u_particle.coefficients[pruned_indices],
+        )
+        pruned_test_vals.append(
+            test_f(
+                pruned_u.duality_pairing(test_kernel, test_kernel_dim)
+                + np.hstack(
+                    (
+                        c_particle * np.ones(test_constant_dim),
+                        np.zeros(test_kernel_dim - test_constant_dim),
+                    )
+                )
+            )
+        )
+    fig, ax1 = plt.subplots(figsize=(5, 4))
+    ax2 = ax1.twinx()
+    (p1,) = ax1.semilogy(
+        thresholds, pruned_test_vals, "-", label="Loss on test set", color="darkred"
+    )
+    (p2,) = ax2.plot(
+        thresholds, pruned_support_sizes, "-", label="Support size", color="lightpink"
+    )
+    ax1.set_ylabel("Loss on test set")
+    ax2.set_ylabel("Support size")
+    ax1.set_xlabel("Pruning threshold")
+    ax1.legend(handles=[p1, p2], loc="upper center")
+    plt.savefig(results_dir / "particle_pruning.png", bbox_inches="tight")
+    plt.close()
+
     # Plot the function with reconstruction error
     resolution = 100
     a_1 = np.linspace(omega_space[0][0], omega_space[0][1], resolution, endpoint=False)
@@ -795,24 +847,26 @@ def create_plots(Nrun: int = 10):
         (resolution, resolution)
     ) + c_particle * np.ones((resolution, resolution))
 
-    for pred_vals, name, u in zip(
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
+    contour1 = ax1.contourf(x, y, vals, levels=100)
+    fig.colorbar(contour1, ax=ax1)
+    ax1.set_xlim(omega_space[0][0], omega_space[0][1])
+    ax1.set_ylim(omega_space[1][0], omega_space[1][1])
+    ax1.set_xlabel("True function")
+    for pred_vals, name, u, ax in zip(
         [pred_vals_nlgcg, pred_vals_particle],
         ["NLGCG", "Particle Descent"],
         [u_nlgcg, u_particle],
+        [ax2, ax3],
     ):
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
-        contour1 = ax1.contourf(x, y, vals, levels=100)
-        fig.colorbar(contour1, ax=ax1)
-        contour2 = ax2.contourf(x, y, pred_vals, levels=100)
-        fig.colorbar(contour2, ax=ax2)
-        contour3 = ax3.contourf(x, y, np.abs(pred_vals - vals), levels=100)
-        fig.colorbar(contour3, ax=ax3)
+        contour = ax.contourf(x, y, pred_vals, levels=100)
+        fig.colorbar(contour, ax=ax)
         for i, point in enumerate(u.support):
             if u.coefficients[i] < 0:
                 color = "b"
             else:
                 color = "r"
-            ax2.add_patch(
+            ax.add_patch(
                 plt.Circle(
                     (point[1], point[2]),
                     radius=point[0],
@@ -821,19 +875,36 @@ def create_plots(Nrun: int = 10):
                     alpha=0.5,
                 )
             )
-        ax1.set_xlim(omega_space[0][0], omega_space[0][1])
-        ax1.set_ylim(omega_space[1][0], omega_space[1][1])
-        ax2.set_xlim(omega_space[0][0], omega_space[0][1])
-        ax2.set_ylim(omega_space[1][0], omega_space[1][1])
-        ax3.set_xlim(omega_space[0][0], omega_space[0][1])
-        ax3.set_ylim(omega_space[1][0], omega_space[1][1])
-        ax1.set_xlabel("True function")
-        ax2.set_xlabel(f"Predicted function {name}")
-        ax3.set_xlabel("Absolute error in prediction")
-        plt.savefig(
-            results_dir / f"reconstruction_error_{name}.png", bbox_inches="tight"
+        ax.set_xlim(omega_space[0][0], omega_space[0][1])
+        ax.set_ylim(omega_space[1][0], omega_space[1][1])
+        ax.set_xlabel(f"Predicted function {name}")
+    plt.savefig(results_dir / f"predictions.png", bbox_inches="tight")
+    plt.close()
+
+    logging.getLogger().setLevel(logging.INFO)  # Reinstate logging
+
+    # Best test value
+    test_value_nlgcg = test_f(
+        u_nlgcg.duality_pairing(test_kernel, test_kernel_dim)
+        + np.hstack(
+            (
+                c_nlgcg * np.ones(test_constant_dim),
+                np.zeros(test_kernel_dim - test_constant_dim),
+            )
         )
-        plt.close()
+    )
+    test_value_particle = test_f(
+        u_particle.duality_pairing(test_kernel, test_kernel_dim)
+        + np.hstack(
+            (
+                c_particle * np.ones(test_constant_dim),
+                np.zeros(test_kernel_dim - test_constant_dim),
+            )
+        )
+    )
+    logging.info(
+        f"Best test value NLGCG: {test_value_nlgcg:.3E}, Particle Descent: {test_value_particle:.3E}"
+    )
 
 
 if __name__ == "__main__":
