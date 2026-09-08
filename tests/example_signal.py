@@ -7,6 +7,10 @@ import sys
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+from threading import Thread
+from queue import Queue
+from scipy import stats
+
 module_path = Path(__file__).resolve().parent.parent
 if module_path not in sys.path:
     sys.path.append(str(module_path))
@@ -16,12 +20,14 @@ if src_path not in sys.path:
 
 from nlgcg import NLGCG
 from src.lib.measure import Measure
-from src.lib.particle_descent import ParticleDescent
-from src.lib.adaptive_refinement import AdaptiveRefinement
 
 os.environ["XLA_FLAGS"] = (
-    "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0 xla_python_client_preallocate=false xla_python_client_mem_fraction=0.5"
+    "--xla_cpu_multi_thread_eigen=true"
+    " intra_op_parallelism_threads=0"
+    " xla_python_client_preallocate=false"
+    " xla_python_client_mem_fraction=0.5"
 )
+
 logging.getLogger().setLevel(logging.INFO)
 # init jax
 jax.config.update("jax_enable_x64", True)
@@ -179,6 +185,7 @@ def define_nlgcg_experiment():
 
 
 def define_particle_descent_experiment(m=50, a_parameter=0.001, b_parameter=0.0005):
+    from src.lib.particle_descent import ParticleDescent
     (
         observations,
         target,
@@ -220,6 +227,8 @@ def define_particle_descent_experiment(m=50, a_parameter=0.001, b_parameter=0.00
 
 
 def define_adaptive_refinement_experiment():
+    # only import AdaptiveRefinement here, since cvxpy is not freethreading compatible
+    from src.lib.adaptive_refinement import AdaptiveRefinement
     (
         observations,
         target,
@@ -259,9 +268,85 @@ def define_adaptive_refinement_experiment():
     return exp
 
 
+def particle_matrix_get_experiment():
+    # set paramter_factors like this for now, will be set directly before solve
+    a_parameter = 0.0000001
+    b_parameter_factor = 0.1
+    b_parameter = b_parameter_factor * a_parameter
+    # set Nparticle to 0 for now, will be set directly before solve
+    Nparticle = 0
+    exp = define_particle_descent_experiment(
+        m=Nparticle, a_parameter=a_parameter, b_parameter=b_parameter
+    )
+    return exp
+
+
+def particle_matrix_run_experiment(exp, args_dict: dict, name: str):
+    # set the hyperparameters in exp
+    exp.m = args_dict["n_particle"]
+    b_parameter_factor = args_dict["b_parameter_factor"]
+    exp.b_parameter = b_parameter_factor * exp.a_parameter
+
+    def sucessful_conv(obj_val):
+        return obj_val - optimum < 1e-4
+
+    def callback(objective_values, pred_values):
+        min_len = 999
+        if sucessful_conv(objective_values[-1].item()):
+            # early termination, no need to continue
+            print(f"terminating {name}: {args_dict} reached tolerance.")
+            return True
+        elif len(pred_values) > 2 * min_len:
+            # try to diagnose early non-sucessful convergence
+            log_res = np.log(np.asarray(pred_values[-min_len:]))
+            ks = np.arange(len(pred_values) - min_len, len(pred_values))
+            res = stats.linregress(ks, log_res)
+            log_th = res.slope / 2
+            if log_th >= 0:
+                # if the esimated convergence rate has the wrong sign, continue
+                return False
+            theta_to_k = np.exp(log_th * ks)
+            objs = np.asarray(objective_values[-min_len:])
+            res = stats.linregress(theta_to_k, objs)
+            obj_ext = res.intercept
+            err_ext = objective_values[-1].item() - obj_ext
+            if (obj_ext > optimum + abs(err_ext)):
+                print(f"terminating {name}: {args_dict}, {obj_ext} is too large to reach {optimum} at error {err_ext}.")
+                return True
+        return False
+    exp.callback = callback
+
+    max_iters = int(1e6)
+    u, c, objective_values, supports, times, success = exp.solve(
+        max_iters=max_iters, max_time=5 * 60, mode="uniform"
+    )
+    print(
+        f"\t({name}): found optimum with value {objective_values[-1]}"
+        f" (residual {objective_values[-1] - optimum})"
+    )
+
+    success = sucessful_conv(objective_values[-1].item())
+    return success
+
+
+def particle_matrix_worker(tasks: Queue, results: Queue):
+    exp = particle_matrix_get_experiment()
+    while True:
+        task = tasks.get()
+        if task is None:
+            print("task is None, shutting down!")
+            tasks.task_done()
+            break
+        else:
+            name, args_dict = task
+            res = particle_matrix_run_experiment(exp, args_dict, name)
+            results.put((res, name, args_dict))
+        tasks.task_done()
+
+
 def create_particle_matrix():
 
-    # NLGCG
+    # Use NLGCG to get a truth solution
     exp, p = define_nlgcg_experiment()
     (
         u,
@@ -274,60 +359,80 @@ def create_particle_matrix():
         objective_values,
         dropped_tot,
         epsilons,
+        all_information
     ) = exp.solve(tol=5e-14, temperature=0.1)
 
     print(
         f"found optimimum with value {objective_values[-1]} (difference to ref {optimum} is {objective_values[-1] - optimum})"
     )
-    print(f"times: {np.array(times)}")
-    print(f"dropped: {dropped_tot}")
+    # print(f"times: {np.array(times)}")
+    # print(f"dropped: {dropped_tot}")
     print(f"constant {c}")
     print(f"solution {u}")
 
     # logging.getLogger().setLevel(logging.WARN)
 
-    runs_per_Nparticle = {12: 50, 24: 50, 50: 20, 100: 10, 200: 5}
-    success_per_Nparticle = {key: 0 for key in runs_per_Nparticle.keys()}
+    # set hyperparameters
+    b_parameter_factor = 0.1
+    runs_per_n_particle = {12: 100, 24: 100, 50: 50, 100: 50, 150: 30, 200: 20}
+    # runs_per_n_particle = {12: 2, 24: 2, 120: 2, 200: 2}
 
-    for Nparticle, Nruns in runs_per_Nparticle.items():
-        # Particle Gradient Descent (a_parameter does not matter so much because of linesearch)
-        print(f"running trials with {Nparticle*2} particles")
-        a_parameter = 0.0000001
-        b_parameter_factor = 0.1
-        b_parameter = b_parameter_factor * a_parameter
-        exp = define_particle_descent_experiment(
-            m=Nparticle, a_parameter=a_parameter, b_parameter=b_parameter
-        )
+    tasks = Queue()
+    results = Queue()
+    if hasattr(sys, "_is_gil_enabled") and not sys._is_gil_enabled():
+        n_thread = 8
+    else:
+        n_thread = 1
+        print("threading may not be useful with GIL enabled, use a threading enabled build and potentially `PYTHON_GIL=0 python`.")
 
-        # run Nruns to determine success probability
-        for it in range(Nruns):
-            u, c, objective_values, supports, times, success = exp.solve(
-                max_iters=int(1e6), max_time=5 * 60, mode="uniform"
-            )
+    pool = [Thread(target=particle_matrix_worker, args=(tasks, results)) for _ in range(n_thread)]
+    for w in pool:
+        w.start()
 
-            print(
-                f"\t({it+1} of {Nruns}): found optimum with value {objective_values[-1]} (residual {objective_values[-1] - optimum})"
-            )
-            # print(u.to_matrix()[np.abs(u.coefficients) > 1e-3, :])
-
-            success = objective_values[-1] - optimum < 1e-3
-            success_per_Nparticle[Nparticle] += int(success)
-
-            if success:
-                plt.semilogy(
-                    np.arange(len(objective_values)),
-                    np.array(objective_values) - optimum,
-                )
-                plt.show()
-                plt.close()
-
-        print(
-            {
-                Npart: success_per_Nparticle[Npart] / Nrun
-                for Npart, Nrun in runs_per_Nparticle.items()
+    for n_particle, n_runs in runs_per_n_particle.items():
+        # Particle Gradient Descent
+        # run n_runs to determine success probability
+        for it in range(n_runs):
+            name = f"{it+1} of {n_runs}"
+            args_dict = {
+                "n_particle": n_particle,
+                "b_parameter_factor": b_parameter_factor,
             }
-        )
-        del exp
+            tasks.put((name, args_dict))
+
+    # shutdown workers
+    for _ in pool:
+        tasks.put(None)
+    tasks.join()
+    for w in pool:
+        w.join()
+
+    res_list = []
+    while not results.empty():
+        res_list.append(results.get())
+
+    success_per_n_particle = {key: 0 for key in runs_per_n_particle.keys()}
+    for success, name, args_dict in res_list:
+        n_particle = args_dict["n_particle"]
+        success_per_n_particle[n_particle] += success
+
+    from scipy.stats import norm
+
+    def wilson_confidence_interval(successes, n, confidence_level=0.95):
+        p = successes / n
+        sigma = np.sqrt((p * (1 - p)) / n).item()
+        z = norm.ppf((1 + confidence_level) / 2)
+        z2on = (z**2) / n
+        p_prime = (p + z2on / 2) / (1 + z2on)
+        sigma_prime = 1 / (2 * n) * np.sqrt(4 * n * (p * (1 - p)) + n * z2on) / (1 + z2on)
+        lower_bound, upper_bound = p_prime - z * sigma_prime, p_prime + z * sigma_prime
+        return p, sigma, (float(lower_bound), float(upper_bound)), n
+
+    stats = {n_part: wilson_confidence_interval(success, runs_per_n_particle[n_part])
+             for n_part, success in success_per_n_particle.items()}
+
+    print("\n".join([f"{res}" for res in res_list]))
+    print("\n".join([f"{it}" for it in stats.items()]))
 
 
 def adapt_time(times, residuals, frame=100, resolution=1):
