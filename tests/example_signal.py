@@ -288,22 +288,26 @@ def particle_matrix_run_experiment(exp, args_dict: dict, name: str):
     exp.b_parameter = b_parameter_factor * exp.a_parameter
 
     def sucessful_conv(obj_val):
-        return obj_val - optimum < 1e-4
+        return obj_val - optimum < 1e-3
 
     def callback(objective_values, pred_values):
         min_len = 999
         if sucessful_conv(objective_values[-1].item()):
             # early termination, no need to continue
-            print(f"terminating {name}: {args_dict} reached tolerance.")
+            print(f"\tterminating {name}: {args_dict} reached tolerance.")
             return True
         elif len(pred_values) > 2 * min_len:
+            # do not try to diagnose early failure
+            return False
+            """
             # try to diagnose early non-sucessful convergence
             log_res = np.log(np.asarray(pred_values[-min_len:]))
             ks = np.arange(len(pred_values) - min_len, len(pred_values))
             res = stats.linregress(ks, log_res)
-            log_th = res.slope / 2
+            log_th = res.slope / 3
             if log_th >= 0:
-                # if the esimated convergence rate has the wrong sign, continue
+                print(f"when estimating {name} {args_dict}: {log_th} is not negative.")
+                # if the estimated convergence rate has the wrong sign, continue
                 return False
             theta_to_k = np.exp(log_th * ks)
             objs = np.asarray(objective_values[-min_len:])
@@ -311,13 +315,16 @@ def particle_matrix_run_experiment(exp, args_dict: dict, name: str):
             obj_ext = res.intercept
             err_ext = objective_values[-1].item() - obj_ext
             if (obj_ext > optimum + abs(err_ext)):
-                print(f"terminating {name}: {args_dict}, {obj_ext} is too large to reach {optimum} at error {err_ext}.")
+                print(f"\tterminating {name} {args_dict}: {obj_ext} is too large to reach {optimum} at error {err_ext}.")
                 return True
+            else:
+                print(f"\tnot terminating {name} {args_dict}: {obj_ext} is small enough to reach {optimum} at error {err_ext}.")
+            """
         return False
     exp.callback = callback
 
     max_iters = int(1e6)
-    u, c, objective_values, supports, times, success = exp.solve(
+    u, c, objective_values, supports, times, local_success = exp.solve(
         max_iters=max_iters, max_time=5 * 60, mode="uniform"
     )
     print(
@@ -325,8 +332,17 @@ def particle_matrix_run_experiment(exp, args_dict: dict, name: str):
         f" (residual {objective_values[-1] - optimum})"
     )
 
-    success = sucessful_conv(objective_values[-1].item())
-    return success
+    obj_val = objective_values[-1].item()
+    global_success = sucessful_conv(obj_val)
+
+    res_dict = {
+        "success": global_success,
+        "local_success": local_success,
+        "obj": obj_val,
+        "time": times[-1],
+        "iters": len(times),
+    }
+    return res_dict
 
 
 def particle_matrix_worker(tasks: Queue, results: Queue):
@@ -373,9 +389,10 @@ def create_particle_matrix():
     # logging.getLogger().setLevel(logging.WARN)
 
     # set hyperparameters
-    b_parameter_factor = 0.1
+    b_parameter_factor = .01
     runs_per_n_particle = {12: 100, 24: 100, 50: 50, 100: 50, 150: 30, 200: 20}
     # runs_per_n_particle = {12: 2, 24: 2, 120: 2, 200: 2}
+    # runs_per_n_particle = {200: 1}
 
     tasks = Queue()
     results = Queue()
@@ -411,14 +428,32 @@ def create_particle_matrix():
     while not results.empty():
         res_list.append(results.get())
 
-    success_per_n_particle = {key: 0 for key in runs_per_n_particle.keys()}
-    for success, name, args_dict in res_list:
-        n_particle = args_dict["n_particle"]
-        success_per_n_particle[n_particle] += success
+    print("Results over all trials:")
+    print("\n".join([f"{res}" for res in res_list]))
 
-    from scipy.stats import norm
+    print("Generating statistics:")
+    stats_per_n_particle = {
+        key: {
+            "success": 0,
+            "wrong_success": 0,
+            "obj": 0,
+            "time": 0,
+            "iters": 0,
+        }
+        for key in runs_per_n_particle.keys()
+    }
+    for res_dict, name, args_dict in res_list:
+        n_particle = args_dict["n_particle"]
+        stats_n = stats_per_n_particle[n_particle]
+        stats_n["success"] += res_dict["success"]
+        if res_dict["local_success"] and not res_dict["success"]:
+            stats_n["wrong_success"] += 1
+        stats_n["obj"] += res_dict["obj"]
+        stats_n["time"] += res_dict["time"]
+        stats_n["iters"] += res_dict["iters"]
 
     def wilson_confidence_interval(successes, n, confidence_level=0.95):
+        from scipy.stats import norm
         p = successes / n
         sigma = np.sqrt((p * (1 - p)) / n).item()
         z = norm.ppf((1 + confidence_level) / 2)
@@ -428,11 +463,54 @@ def create_particle_matrix():
         lower_bound, upper_bound = p_prime - z * sigma_prime, p_prime + z * sigma_prime
         return p, sigma, (float(lower_bound), float(upper_bound)), n
 
-    stats = {n_part: wilson_confidence_interval(success, runs_per_n_particle[n_part])
-             for n_part, success in success_per_n_particle.items()}
+    def mean(sum, n):
+        avg = sum / n
+        return avg
 
-    print("\n".join([f"{res}" for res in res_list]))
-    print("\n".join([f"{it}" for it in stats.items()]))
+    res_stats = {
+        n_part: {
+            "success": wilson_confidence_interval(stats_n["success"], runs_per_n_particle[n_part]),
+            "wrong_success": wilson_confidence_interval(stats_n["wrong_success"], runs_per_n_particle[n_part]),
+            "obj": mean(stats_n["obj"], runs_per_n_particle[n_part]),
+            "time": mean(stats_n["time"], runs_per_n_particle[n_part]),
+            "iters": mean(stats_n["iters"], runs_per_n_particle[n_part]),
+        }
+        for n_part, stats_n in stats_per_n_particle.items()
+    }
+
+    print("\n".join([f"{it}" for it in res_stats.items()]))
+    print(format_table(res_stats))
+
+
+def format_table(res_stats):
+
+    n_parts = []
+    ps = []
+    p_cis = []
+    pws = []
+    pw_cis = []
+    times = []
+    for n_part, stats_n in res_stats.items():
+        n_parts.append(f"${2 * n_part}$")
+        p, sigma, (lower_bound, upper_bound), n = stats_n["success"]
+        ps.append(f"${p:.2f}$")
+        p_cis.append(f"$[{lower_bound:.2f}, {upper_bound:.2f}]$")
+        p, sigma, (lower_bound, upper_bound), n = stats_n["wrong_success"]
+        pws.append(f"${p:.2f}$")
+        pw_cis.append(f"$[{lower_bound:.2f}, {upper_bound:.2f}]$")
+        times.append(f"${stats_n['time']:.1f}$")
+
+    lines = []
+    lines.append("\\begin{tabular}{l" + ("c" * len(n_parts)) + "}\n\\toprule")
+    lines.append("$N$ & " + " & ".join(n_parts) + " \\\\ \\midrule")
+    lines.append("$p_{\\text{conv}}$ & " + " & ".join(ps) + " \\\\")
+    lines.append("conf. int. & " + " & ".join(p_cis) + " \\\\")
+    lines.append("$p_{\\text{wrong-conv}}$ & " + " & ".join(pws) + " \\\\")
+    lines.append("conf. int. & " + " & ".join(pw_cis) + " \\\\")
+    lines.append("$t_{\\text{run}}$ & " + " & ".join(times) + " \\\\")
+    lines.append("\\bottomrule\n\\end{tabular}")
+
+    return "\n".join(lines)
 
 
 def adapt_time(times, residuals, frame=100, resolution=1):
