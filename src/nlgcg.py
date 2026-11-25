@@ -382,7 +382,7 @@ class NLGCG:
             mode=mode,
             newton_tolerance=self.newton_tolerance,
         )
-        best_val, found_points, global_valid = global_search_object.solve(
+        best_val, found_points, lazy_step = global_search_object.solve(
             u, c, epsilon, q_u, p_u, radius, temperature, log_results
         )
         del global_search_object
@@ -411,7 +411,8 @@ class NLGCG:
             Curv = self.C_raw * self.M**2
             eta = min(1, phi / Curv)
             u_plus = u * (1 - eta) + v * eta
-            jdiff = self.j(u_plus, c) - j_initial
+            c_plus = c * (1 - eta)
+            jdiff = self.j(u_plus, c_plus) - j_initial
             if phi <= Curv:
                 expected_decrease = -0.5 * phi**2 / Curv
             else:
@@ -427,11 +428,13 @@ class NLGCG:
             # There has been no increase of the curvature constant, try a smaller value
             while condition and self.C_raw >= self.C_0:
                 previous_u_plus = u_plus.copy()
+                previous_c_plus = c_plus
                 self.C_raw /= 2
                 Curv = self.C_raw * self.M**2
                 eta = min(1, phi / Curv)
                 u_plus = u * (1 - eta) + v * eta
-                jdiff = self.j(u_plus, c) - j_initial
+                c_plus = c * (1 - eta)
+                jdiff = self.j(u_plus, c_plus) - j_initial
                 if phi <= Curv:
                     expected_decrease = -0.5 * phi**2 / Curv
                 else:
@@ -439,13 +442,14 @@ class NLGCG:
                 condition = jdiff <= expected_decrease
             self.C_raw *= 2
             u_plus = previous_u_plus.copy()
-        if not global_valid:
+            c_plus = previous_c_plus
+        if not lazy_step:
             # We have a global maximum x_k
             if mode == "deterministic":
                 epsilon = 0.5 * phi
             else:
                 epsilon /= 2
-        return u_plus, epsilon, global_valid, phi_numerical
+        return u_plus, c_plus, epsilon, lazy_step, phi_numerical
 
     def newton_step(
         self,
@@ -484,6 +488,7 @@ class NLGCG:
         tol: float,
         u_0: Measure = Measure(),
         c_0: float = 0,
+        max_time: float = 1000,
         mode: str = "stochastic_adaptive",
         inner_mode: str = "trust_region",
         temperature: float = 1.0,
@@ -491,6 +496,7 @@ class NLGCG:
         full_trace: bool = False,
         optimum: float = 0,
     ) -> tuple:
+        choices = ["Newton", "Coef", "Merge"]
         all_information = []
         self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
         self.C_raw = self.C_0
@@ -498,21 +504,23 @@ class NLGCG:
         k = 0
         dropped = False
         dropped_tot = 0
+        radii = []
         initial_time = time.perf_counter()
         times = [time.perf_counter() - initial_time]
-        supports = [0]
+        supports = [len(u_0.coefficients)]
         inner_loop = [0]
         objective_values = [self.j(u_0, c_0)]
         epsilons = [epsilon]
+        us = [u_0.copy()]
+        cs = [c_0]
         lgcg_lazy = 0
         lgcg_total = 0
 
         u_plus = u_0.copy()
         c_plus = c_0
         phi_numerical = tol + 1
-        while phi_numerical > tol:
-            global_valid = "N/A"
-
+        lazy_step = True
+        while epsilon > tol and times[-1]<max_time:
             t = time.perf_counter()
             if len(u_plus.coefficients):
                 u_drop, dropped = self.drop_step(u_plus, c_plus)
@@ -532,26 +540,27 @@ class NLGCG:
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
             ssn_1_time = time.perf_counter() - t
 
-            t = time.perf_counter()
-            parameters, u_ks, radii, old_radii = self.local_merging_update_radii(
-                u_coef, c_coef
-            )
-            c_ks = c_coef
-            u_lm, c_lm = u_ks.copy(), c_ks
-            radii_time = time.perf_counter() - t
-
-            t = time.perf_counter()
-            if self.experiment_type == "Euclidean":
-                full_parameters = np.hstack((parameters.flatten(), c_ks))
-            else:
-                full_parameters = parameters.flatten()
-            if log_results and len(full_parameters):
-                e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
-                logging.info(
-                    f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
+            # Newton iterations
+            if len(u_coef.coefficients):# and not lazy_step:
+                t = time.perf_counter()
+                parameters, u_ks, radii, old_radii = self.local_merging_update_radii(
+                    u_coef, c_coef
                 )
+                c_ks = c_coef
+                u_lm, c_lm = u_ks.copy(), c_ks
+                radii_time = time.perf_counter() - t
+    
+                t = time.perf_counter()
+                if self.experiment_type == "Euclidean":
+                    full_parameters = np.hstack((parameters.flatten(), c_ks))
+                else:
+                    full_parameters = parameters.flatten()
+                # if log_results and len(full_parameters):
+                #     e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
+                #     logging.info(
+                #         f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
+                #     )
 
-            if len(u_ks.coefficients):
                 full_parameters_new, newton_information = self.newton_step(
                     k=k,
                     params=full_parameters,
@@ -570,75 +579,40 @@ class NLGCG:
                     c_ks = 0
                 u_ks = Measure(matrix=parameters)
 
-            newton_time = time.perf_counter() - t
-            t = time.perf_counter()
-            all_iterates = [
-                (u_ks, c_ks),
-                (u_coef, c_coef),
-                (u_lm, c_lm),
-            ]
-            iterate_values = [self.j(*iterate) for iterate in all_iterates]
-            choice_index = np.nanargmin(iterate_values)
-            u, c = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
-            u, c = self.finite_dimensional_step(
-                u,
-                c,
-                self.machine_precision,
-                mode="positive",
-                optimization="full",
-                log_results=log_results,
-            )
-            if full_trace:
-                all_information.append((u, c))
+                newton_time = time.perf_counter() - t
+                t = time.perf_counter()
+                all_iterates = [
+                    (u_ks, c_ks),
+                    (u_coef, c_coef),
+                    (u_lm, c_lm),
+                ]
+                iterate_values = [self.j(*iterate) for iterate in all_iterates]
+                choice_index = np.nanargmin(iterate_values)
+                choice = choices[choice_index]
+                u_choice, c_choice = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
+                u, c = self.finite_dimensional_step(
+                    u_choice,
+                    c_choice,
+                    self.machine_precision,
+                    mode="positive",
+                    optimization="full",
+                    log_results=log_results,
+                )
+                if full_trace:
+                    all_information.append((u, c))
+                ssn_2_time = time.perf_counter() - t
+            else:
+                u = u_coef.copy()
+                c = c_coef
+                choice = "N/A"
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
-            ssn_2_time = time.perf_counter() - t
-
-            # # Plot dual variable
-            # if not k % 10:
-            #     hess_p_u_vals = self.hess_p(u, c)(u.support)
-            #     grad_p_u_vals = self.grad_p(u, c)(u.support)
-            #     for i, x in enumerate(u.support):
-            #         e_vals = np.linalg.eigvals(hess_p_u_vals[i])
-            #         logging.info(x)
-            #         logging.info(np.linalg.norm(grad_p_u_vals[i]))
-            #         logging.info(
-            #             f"min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
-            #         )
-            #         logging.info("-" * 50)
-
-            #     P = lambda x: np.abs(p_u(x))
-            #     a = np.arange(self.Omega[0][0], self.Omega[0][1], 0.5)
-            #     B, D = np.meshgrid(a, a)
-            #     vals = np.array(
-            #         [
-            #             P(np.array([[x_1, x_2]]))
-            #             for x_1, x_2 in zip(B.flatten(), D.flatten())
-            #         ]
-            #     ).reshape((len(a), len(a)))
-            #     plt.contourf(B, D, vals, levels=100)
-            #     plt.colorbar()
-            #     # for i, x in enumerate(true_sources):
-            #     #     if i:
-            #     #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
-            #     #     else:
-            #     #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
-            #     for i, x in enumerate(u.support):
-            #         if i:
-            #             plt.plot([x[0]], [x[1]], "o", c="r")
-            #         else:
-            #             plt.plot([x[0]], [x[1]], "o", c="r", label="Optimal support")
-            #     # plt.legend()
-            #     # plt.savefig(results_dir / "optimal_dual_certificate.png", bbox_inches="tight")
-            #     # plt.close()
-            #     plt.show()
 
             t = time.perf_counter()
-            u_plus, epsilon, global_valid, phi_numerical = self.lgcg_step(
+            u_plus, c_plus, epsilon, lazy_step, phi_numerical = self.lgcg_step(
                 p_u, u, c, epsilon, q_u, radii, mode, temperature, log_results
             )
-            c_plus = c
-            lgcg_lazy += int(global_valid)
+            lgcg_lazy += int(lazy_step)
             lgcg_total += 1
             lgcg_time = time.perf_counter() - t
 
@@ -647,28 +621,30 @@ class NLGCG:
             inner_loop.append(0)
             objective_values.append(self.j(u, c))
             epsilons.append(epsilon)
+            us.append(u.copy())
+            cs.append(c)
             if log_results:
                 logging.info(
-                    f"{k}: choice: {choice_index}, lazy: {global_valid}, support: {len(u.support)}, epsilon: {epsilon:.3E}, criterion: {phi_numerical:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.14E}"
+                    f"{k}: choice: {choice}, lazy: {lazy_step}, support: {len(u.support)}, epsilon: {epsilon:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.17E}"
                 )
-                logging.info(
-                    f"ssn_1: {ssn_1_time:.3E}, radii: {radii_time:.3E}, newton: {newton_time:.3E}, ssn_2: {ssn_2_time:.3E}, lgcg: {lgcg_time:.3E}"
-                )
+                # logging.info(
+                #     f"ssn_1: {ssn_1_time:.3E}, radii: {radii_time:.3E}, newton: {newton_time:.3E}, ssn_2: {ssn_2_time:.3E}, lgcg: {lgcg_time:.3E}"
+                # )
                 logging.info(
                     "============================================================================================="
                 )
             k += 1
 
-            if abs(objective_values[-1] - optimum) < 1e-10:
+            if abs(objective_values[-1] - optimum) < 1e-16:
                 break
 
         logging.info(
-            f"NLGCG converged in {times[-1]:.3E} seconds with sparsity {len(u.support)} to objective value {objective_values[-1]:.14E}"
+            f"NLGCG converged in {times[-1]:.3E} seconds with sparsity {len(u.support)} to objective value {objective_values[-1]:.17E}"
         )
 
         return (
-            u,
-            c,
+            us,
+            cs,
             times,
             supports,
             inner_loop,

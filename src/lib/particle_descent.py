@@ -162,6 +162,9 @@ class ParticleDescent:
         objective_values = [self.j(u, c)]
         times = [time.perf_counter() - t_0]
         supports = [len(u.coefficients)]
+        us = [u.copy()]
+        all_cs = [c]
+        pred_values = []
         pred_values = []
         # The pred value will be computed later
 
@@ -182,9 +185,7 @@ class ParticleDescent:
             inner = -self.grad_f(inner)
             inner_sum = np.sum(inner[: self.constant_dim])
 
-            inner_r_update = (
-                self.kernel_sign * p_u(theta) - self.alpha
-            )  # <-- There was an error in sign of alpha
+            inner_r_update = self.kernel_sign * p_u(theta) - self.alpha
             inner_cs_update = np.sign(cs) * inner_sum
             inner_theta_update = (self.kernel_sign * np.array(grad_p_u(theta)).T).T
 
@@ -294,7 +295,10 @@ class ParticleDescent:
                     )
             Nparticle = len(r)
 
-            times.append(time.perf_counter() - t_0)
+            if not (it + 1) % 100:
+                times.append(time.perf_counter() - t_0)
+                us.append(u.copy())
+                all_cs.append(c)
 
             objective_values.append(obj)
             supports.append(Nparticle)
@@ -348,4 +352,4 @@ class ParticleDescent:
             f" success {success} to objective value {objective_values[-1]:.14E}"
         )
 
-        return u, c, objective_values, supports, times, success
+        return us, all_cs, objective_values, supports, times, success

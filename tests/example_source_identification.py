@@ -153,7 +153,6 @@ def adapt_time(times, residuals, frame=100, resolution=1):
             to_return.append(last_res)
         if t * resolution >= times[-1]:
             break
-    to_return.append(residuals[-1])
     return to_return
 
 
@@ -214,8 +213,8 @@ def create_plots():
     nlgcg_residuals = []
     nlgcg_supports = []
     (
-        u_nlgcg,
-        c_nlgcg,
+        us_nlgcg,
+        cs_nlgcg,
         times_nlgcg,
         supports_nlgcg,
         inner_loop,

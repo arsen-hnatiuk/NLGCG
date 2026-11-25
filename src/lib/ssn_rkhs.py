@@ -61,7 +61,7 @@ class SSN_RKHS:
         while psi_val > tol:
             if k > self.maximum_iterations:
                 if self.log_results:
-                    logging.info(
+                    logging.warning(
                         f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: MAX ITERATIONS REACHED, {psi_val:.3E} achieved"
                     )
                 if self.j(prox_q) <= initial_j:
@@ -78,7 +78,7 @@ class SSN_RKHS:
                     direction = np.linalg.solve(left_hand + theta * Id, right_hand)
                 except np.linalg.LinAlgError:
                     if self.log_results:
-                        logging.info(
+                        logging.warning(
                             f"SSN in {len(prox_q)} dimensions and tolerance {tol:.3E}: LINEAR SYSTEM NOT SOLVABLE, {psi_val:.3E} achieved"
                         )
                     if self.j(prox_q) <= initial_j:

@@ -1,2 +1,2 @@
 #!/bin/sh
-conda list --export > requirements.txt
+conda env export > environment.yml
