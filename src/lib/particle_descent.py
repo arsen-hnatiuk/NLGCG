@@ -159,6 +159,7 @@ class ParticleDescent:
         supports = [len(u.coefficients)]
         us = [u.copy()]
         all_cs = [c]
+        pred_values = []
 
         min_a_parameter = 1e-8
 
@@ -287,11 +288,12 @@ class ParticleDescent:
 
             if not (it + 1) % 100:
                 times.append(time.perf_counter() - t_0)
-                objective_values.append(obj)
-                supports.append(Nparticle)
                 us.append(u.copy())
                 all_cs.append(c)
 
+            objective_values.append(obj)
+            supports.append(Nparticle)
+            pred_values.append(pred_raw)
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
                 success = False

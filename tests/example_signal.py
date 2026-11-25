@@ -261,11 +261,11 @@ def define_adaptive_refinement_experiment():
 
 def create_particle_matrix():
 
-    # NLGCG
+    # Use NLGCG to get a truth solution
     exp, p = define_nlgcg_experiment()
     (
-        us,
-        cs,
+        u,
+        c,
         times,
         supports,
         inner_loop,
@@ -274,62 +274,141 @@ def create_particle_matrix():
         objective_values,
         dropped_tot,
         epsilons,
+        all_information
     ) = exp.solve(tol=5e-14, temperature=0.1)
-    u = us[-1]
-    c = cs[-1]
 
     print(
         f"found optimimum with value {objective_values[-1]} (difference to ref {optimum} is {objective_values[-1] - optimum})"
     )
-    print(f"times: {np.array(times)}")
-    print(f"dropped: {dropped_tot}")
+    # print(f"times: {np.array(times)}")
+    # print(f"dropped: {dropped_tot}")
     print(f"constant {c}")
     print(f"solution {u}")
 
     # logging.getLogger().setLevel(logging.WARN)
 
-    runs_per_Nparticle = {12: 50, 24: 50, 50: 20, 100: 10, 200: 5}
-    success_per_Nparticle = {key: 0 for key in runs_per_Nparticle.keys()}
+    # set hyperparameters
+    b_parameter_factor = .01
+    runs_per_n_particle = {12: 100, 24: 100, 50: 50, 100: 50, 150: 30, 200: 20}
+    # runs_per_n_particle = {12: 2, 24: 2, 120: 2, 200: 2}
+    # runs_per_n_particle = {200: 1}
 
-    for Nparticle, Nruns in runs_per_Nparticle.items():
-        # Particle Gradient Descent (a_parameter does not matter so much because of linesearch)
-        print(f"running trials with {Nparticle*2} particles")
-        a_parameter = 0.0000001
-        b_parameter_factor = 0.1
-        b_parameter = b_parameter_factor * a_parameter
-        exp = define_particle_descent_experiment(
-            m=Nparticle, a_parameter=a_parameter, b_parameter=b_parameter
-        )
+    tasks = Queue()
+    results = Queue()
+    if hasattr(sys, "_is_gil_enabled") and not sys._is_gil_enabled():
+        n_thread = 8
+    else:
+        n_thread = 1
+        print("threading may not be useful with GIL enabled, use a threading enabled build and potentially `PYTHON_GIL=0 python`.")
 
-        # run Nruns to determine success probability
-        for it in range(Nruns):
-            us, cs, objective_values, supports, times, success = exp.solve(
-                max_iters=int(1e6), max_time=5 * 60, mode="uniform"
-            )
+    pool = [Thread(target=particle_matrix_worker, args=(tasks, results)) for _ in range(n_thread)]
+    for w in pool:
+        w.start()
 
-            print(
-                f"\t({it+1} of {Nruns}): found optimum with value {objective_values[-1]} (residual {objective_values[-1] - optimum})"
-            )
-            # print(u.to_matrix()[np.abs(u.coefficients) > 1e-3, :])
-
-            success = objective_values[-1] - optimum < 1e-3
-            success_per_Nparticle[Nparticle] += int(success)
-
-            if success:
-                plt.semilogy(
-                    np.arange(len(objective_values)),
-                    np.array(objective_values) - optimum,
-                )
-                plt.show()
-                plt.close()
-
-        print(
-            {
-                Npart: success_per_Nparticle[Npart] / Nrun
-                for Npart, Nrun in runs_per_Nparticle.items()
+    for n_particle, n_runs in runs_per_n_particle.items():
+        # Particle Gradient Descent
+        # run n_runs to determine success probability
+        for it in range(n_runs):
+            name = f"{it+1} of {n_runs}"
+            args_dict = {
+                "n_particle": n_particle,
+                "b_parameter_factor": b_parameter_factor,
             }
-        )
-        del exp
+            tasks.put((name, args_dict))
+
+    # shutdown workers
+    for _ in pool:
+        tasks.put(None)
+    tasks.join()
+    for w in pool:
+        w.join()
+
+    res_list = []
+    while not results.empty():
+        res_list.append(results.get())
+
+    print("Results over all trials:")
+    print("\n".join([f"{res}" for res in res_list]))
+
+    print("Generating statistics:")
+    stats_per_n_particle = {
+        key: {
+            "success": 0,
+            "wrong_success": 0,
+            "obj": 0,
+            "time": 0,
+            "iters": 0,
+        }
+        for key in runs_per_n_particle.keys()
+    }
+    for res_dict, name, args_dict in res_list:
+        n_particle = args_dict["n_particle"]
+        stats_n = stats_per_n_particle[n_particle]
+        stats_n["success"] += res_dict["success"]
+        if res_dict["local_success"] and not res_dict["success"]:
+            stats_n["wrong_success"] += 1
+        stats_n["obj"] += res_dict["obj"]
+        stats_n["time"] += res_dict["time"]
+        stats_n["iters"] += res_dict["iters"]
+
+    def wilson_confidence_interval(successes, n, confidence_level=0.95):
+        from scipy.stats import norm
+        p = successes / n
+        sigma = np.sqrt((p * (1 - p)) / n).item()
+        z = norm.ppf((1 + confidence_level) / 2)
+        z2on = (z**2) / n
+        p_prime = (p + z2on / 2) / (1 + z2on)
+        sigma_prime = 1 / (2 * n) * np.sqrt(4 * n * (p * (1 - p)) + n * z2on) / (1 + z2on)
+        lower_bound, upper_bound = p_prime - z * sigma_prime, p_prime + z * sigma_prime
+        return p, sigma, (float(lower_bound), float(upper_bound)), n
+
+    def mean(sum, n):
+        avg = sum / n
+        return avg
+
+    res_stats = {
+        n_part: {
+            "success": wilson_confidence_interval(stats_n["success"], runs_per_n_particle[n_part]),
+            "wrong_success": wilson_confidence_interval(stats_n["wrong_success"], runs_per_n_particle[n_part]),
+            "obj": mean(stats_n["obj"], runs_per_n_particle[n_part]),
+            "time": mean(stats_n["time"], runs_per_n_particle[n_part]),
+            "iters": mean(stats_n["iters"], runs_per_n_particle[n_part]),
+        }
+        for n_part, stats_n in stats_per_n_particle.items()
+    }
+
+    print("\n".join([f"{it}" for it in res_stats.items()]))
+    print(format_table(res_stats))
+
+def format_table(res_stats):
+
+    n_parts = []
+    ps = []
+    p_cis = []
+    pws = []
+    pw_cis = []
+    times = []
+    for n_part, stats_n in res_stats.items():
+        n_parts.append(f"${2 * n_part}$")
+        p, sigma, (lower_bound, upper_bound), n = stats_n["success"]
+        ps.append(f"${p:.2f}$")
+        p_cis.append(f"$[{lower_bound:.2f}, {upper_bound:.2f}]$")
+        p, sigma, (lower_bound, upper_bound), n = stats_n["wrong_success"]
+        pws.append(f"${p:.2f}$")
+        pw_cis.append(f"$[{lower_bound:.2f}, {upper_bound:.2f}]$")
+        times.append(f"${stats_n['time']:.1f}$")
+
+    lines = []
+    lines.append("\\begin{tabular}{l" + ("c" * len(n_parts)) + "}\n\\toprule")
+    lines.append("$N$ & " + " & ".join(n_parts) + " \\\\ \\midrule")
+    lines.append("$p_{\\text{conv}}$ & " + " & ".join(ps) + " \\\\")
+    lines.append("conf. int. & " + " & ".join(p_cis) + " \\\\")
+    lines.append("$p_{\\text{wrong-conv}}$ & " + " & ".join(pws) + " \\\\")
+    lines.append("conf. int. & " + " & ".join(pw_cis) + " \\\\")
+    lines.append("$t_{\\text{run}}$ & " + " & ".join(times) + " \\\\")
+    lines.append("\\bottomrule\n\\end{tabular}")
+
+    return "\n".join(lines)
 
 
 def adapt_time(times, residuals, frame=100, resolution=1):

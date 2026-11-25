@@ -49,7 +49,7 @@ resolution = 1  # time resolution for the plots (seconds)
 frame_size = 1000  # Time frame tracked for the residuals (seconds)
 tol = 1e-12
 temperature = 1
-newton_tolerance = 3e-1
+newton_tolerance = 1e-1
 
 
 def define_experiment():
