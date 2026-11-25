@@ -7,6 +7,7 @@ import pickle
 import sys
 import matplotlib.pyplot as plt
 from pathlib import Path
+from itertools import product
 
 module_path = Path(__file__).resolve().parent.parent
 if module_path not in sys.path:
@@ -32,16 +33,23 @@ _ = jnp.zeros(0)
 
 sigma_space = np.array([0, 2])
 omega_space = np.array([[-1, 1], [-1, 1]])
-Omega = np.vstack((sigma_space, omega_space))
+corners = np.array(list(product(*omega_space)))
+larger_omega_space = np.array([[-1.1, 1.1], [-1.1, 1.1]])
+Omega = np.vstack((sigma_space, larger_omega_space))
 d = omega_space.shape[0]
 variance_exponent = 0.1
-alpha = 1e-3
+alpha = 1e-5 # 1e-3
 observation_resolution = 20
 test_resolution = 100
 endpoint = False
 max_radius = (Omega[0][1] - Omega[0][0]) / 100
 true_function = lambda x: np.minimum(1 - np.abs(x[:, 0]), 1 - np.abs(x[:, 1]))
-optimum = 0.0339493125929431
+optimum = 0 # 0.0339489271629
+resolution = 1  # time resolution for the plots (seconds)
+frame_size = 1000  # Time frame tracked for the residuals (seconds)
+tol = 1e-12
+temperature = 1
+newton_tolerance = 3e-1
 
 
 def define_experiment():
@@ -50,10 +58,7 @@ def define_experiment():
             np.meshgrid(
                 *(
                     np.linspace(
-                        bound[0] + 1e-5,
-                        bound[1] - np.sqrt(3) * 1e-5,
-                        observation_resolution,
-                        endpoint=endpoint,
+                        bound[0], bound[1], observation_resolution, endpoint=True
                     )
                     for bound in omega_space
                 )
@@ -62,16 +67,19 @@ def define_experiment():
         .reshape(len(omega_space), -1)
         .T
     )
+    train_edge_indices = np.array([any(obs == omega_space[0][0]) or any(obs == omega_space[0][1]) for obs in observations])
+    train_corner_indices = np.array([not all(np.linalg.norm(corners-obs,axis=1)) for obs in observations])
+    train_mesh = ((omega_space[0][1]-omega_space[0][0])/(observation_resolution-1))**2 # Assume square domain
+    train_quadrature = train_mesh*np.ones(len(observations)) # Trapezoid rule
+    train_quadrature[train_edge_indices] /= 2 # boundary points
+    train_quadrature[train_corner_indices] /= 2 # corner points
+    train_quadrature = np.diag(train_quadrature)
+
     test_observations = (
         np.array(
             np.meshgrid(
                 *(
-                    np.linspace(
-                        bound[0] + 1e-5,
-                        bound[1] - np.sqrt(3) * 1e-5,
-                        test_resolution,
-                        endpoint=endpoint,
-                    )
+                    np.linspace(bound[0], bound[1], test_resolution, endpoint=True)
                     for bound in omega_space
                 )
             )
@@ -79,6 +87,13 @@ def define_experiment():
         .reshape(len(omega_space), -1)
         .T
     )
+    test_edge_indices = np.array([any(obs == omega_space[0][0]) or any(obs == omega_space[0][1]) for obs in test_observations])
+    test_corner_indices = np.array([not all(np.linalg.norm(corners-obs,axis=1)) for obs in test_observations])
+    test_mesh = ((omega_space[0][1]-omega_space[0][0])/(test_resolution-1))**2 # Assume square domain
+    test_quadrature = test_mesh*np.ones(len(test_observations)) # Trapezoid rule
+    test_quadrature[test_edge_indices] /= 2 # boundary points
+    test_quadrature[test_corner_indices] /= 2 # corner points
+    test_quadrature = np.diag(test_quadrature)
 
     @jax.jit
     def singleton_kernel(omega: np.ndarray):
@@ -90,6 +105,7 @@ def define_experiment():
         )
         return outer
 
+    @jax.jit
     def test_singleton_kernel(omega: np.ndarray):
         sigma = omega[0]
         x = omega[1:]
@@ -110,11 +126,22 @@ def define_experiment():
         return alpha * jnp.linalg.norm(w, ord=1)
 
     @jax.jit
-    def f(y: np.ndarray) -> float:
-        return 0.5 * jnp.sum((y - target) ** 2)
+    def f(y):
+        residuum = (y - target)
+        return 0.5 * residuum @ train_quadrature @ residuum
 
-    def test_f(y: np.ndarray) -> float:
-        return 0.5 * jnp.sum((y - test_target) ** 2) / len(test_target)
+    @jax.jit
+    def test_f(y):
+        residuum = (y - test_target)
+        return 0.5 * residuum @ test_quadrature @ residuum
+
+    # @jax.jit
+    # def f(y: np.ndarray) -> float:
+    #     return 0.5 * jnp.sum((y - target) ** 2)
+
+    # @jax.jit
+    # def test_f(y: np.ndarray) -> float:
+    #     return 0.5 * jnp.sum((y - test_target) ** 2) / len(test_target)
 
     grad_f = jax.jit(jax.grad(f))
     hess_f = jax.jit(jax.hessian(f))
@@ -228,7 +255,7 @@ def define_nlgcg_experiment():
         dual_variable_goodness=0.3,
         constant_dim=len(target),
         kernel_dim=len(target),
-        newton_tolerance=2e-2,
+        newton_tolerance=newton_tolerance,
         max_radius=max_radius,
     )
     return exp, test_f, test_kernel, test_target
@@ -354,18 +381,17 @@ def bring_to_same_length(arrays):
     return new_arrays
 
 
-def create_plots(Nrun: int = 10):
-    resolution = 1  # time resolution for the plots (seconds)
-    frame_size = 1000  # Time frame tracked for the residuals (seconds)
-
+def compute_experiments(Nrun, log_results):    
     # NLGCG
-    nlgcg_residuals = []
-    nlgcg_tests = []
-    nlgcg_supports = []
     nlgcg_converged = 0
     for i in range(Nrun):
         logging.info(f"Running NLGCG (trial {i+1})")
-        exp_nlgcg, test_f, test_kernel, test_target = define_nlgcg_experiment()
+        (
+            exp_nlgcg,
+            test_f,
+            test_kernel,
+            test_target,
+        ) = define_nlgcg_experiment()
         (
             us_nlgcg,
             cs_nlgcg,
@@ -377,52 +403,30 @@ def create_plots(Nrun: int = 10):
             objective_values_nlgcg,
             dropped_tot,
             epsilons,
-            all_inormation,
+            all_information,
         ) = exp_nlgcg.solve(
-            tol=5e-14, temperature=1, log_results=False, optimum=optimum
+            tol=tol, temperature=temperature, log_results=log_results, optimum=optimum, max_time=frame_size
         )
-        test_values_nlgcg = [
-            test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
-            for u, c, in zip(us_nlgcg, cs_nlgcg)
-        ]
-        best_test_iteration = np.argmin(test_values_nlgcg)
-        u_nlgcg = us_nlgcg[best_test_iteration]
-        c_nlgcg = cs_nlgcg[best_test_iteration]
-        del exp_nlgcg, us_nlgcg, cs_nlgcg
+        with open(f"{results_dir}/nlgcg_{i}.pkl", "wb") as file:
+            pickle.dump((us_nlgcg, cs_nlgcg, times_nlgcg), file)
+        del exp_nlgcg
         jax.clear_caches()
-        local_residuals = adapt_time(
-            times_nlgcg,
-            [obj - optimum for obj in objective_values_nlgcg],
-            frame=frame_size,
-            resolution=resolution,
-        )
-        local_test_values = adapt_time(
-            times_nlgcg, test_values_nlgcg, frame=frame_size, resolution=resolution
-        )
-        if local_residuals[-1] < 1e-5:
+        if objective_values_nlgcg[-1]-optimum < 1e-5:
             nlgcg_converged += 1
-        nlgcg_residuals.append(local_residuals)
-        nlgcg_tests.append(local_test_values)
-        nlgcg_supports.append(supports_nlgcg)
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
-    nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
-    nlgcg_tests_mean = np.mean(bring_to_same_length(nlgcg_tests), axis=0)
-    nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
-    nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
-
     # Particle Descent Stochastic
-    particle_residuals = []
-    particle_tests = []
-    particle_supports = []
     particle_converged = 0
     for i in range(Nrun):
         success = False
         while not success:
             logging.info(f"Running Particle descent (trial {i+1})")
-            exp_particle, test_f, test_kernel, test_target = (
-                define_particle_descent_experiment()
-            )
+            (
+                exp_particle,
+                test_f,
+                test_kernel,
+                test_target,
+            ) = define_particle_descent_experiment()
             (
                 us_particle,
                 cs_particle,
@@ -431,49 +435,19 @@ def create_plots(Nrun: int = 10):
                 times_particle,
                 success,
             ) = exp_particle.solve(
-                max_time=frame_size, mode="exponential", log_results=False
+                max_time=frame_size, mode="exponential", log_results=log_results
             )
-            test_values_particle_raw = [
-                test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
-                for u, c, in zip(us_particle, cs_particle)
-            ]
-            best_test_iteration = np.argmin(test_values_particle_raw)
-            u_particle = us_particle[best_test_iteration]
-            c_particle = cs_particle[best_test_iteration]
-            del exp_particle, us_particle, cs_particle
+            del exp_particle
             jax.clear_caches()
-        local_residuals = adapt_time(
-            times_particle,
-            [obj - optimum for obj in objective_values_particle],
-            frame=frame_size,
-            resolution=resolution,
-        )
-        # For particle descent, the test values are recorded every 100 iterations
-        test_values_particle = []
-        for test_val in test_values_particle_raw:
-            test_values_particle += [test_val] * 100
-        test_values_particle = test_values_particle[: len(times_particle)]
-        local_test_values = adapt_time(
-            times_particle,
-            test_values_particle,
-            frame=frame_size,
-            resolution=resolution,
-        )
-        if local_residuals[-1] < 1e-5:
+        with open(f"{results_dir}/particle_{i}.pkl", "wb") as file:
+            pickle.dump((us_particle, cs_particle, times_particle), file)
+        if objective_values_particle[-1]-optimum < 1e-5:
             particle_converged += 1
-        particle_residuals.append(local_residuals)
-        particle_tests.append(local_test_values)
-        particle_supports.append(supports_particle)
     logging.info(
-        f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
+            f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
     )
 
-    particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
-    particle_tests_mean = np.mean(bring_to_same_length(particle_tests), axis=0)
-    particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
-    particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
-
-    # Adaptive refinement
+    # Adaptive Refinement
     logging.info("Running adaptive refinement")
     exp_adaptive, test_f, test_kernel, test_target = (
         define_adaptive_refinement_experiment()
@@ -488,7 +462,146 @@ def create_plots(Nrun: int = 10):
         times_adaptive,
         actives,
         supports_adaptive,
-    ) = exp_adaptive.solve(max_time=frame_size, log_results=False)
+    ) = exp_adaptive.solve(max_time=frame_size, log_results=log_results)
+    del exp_adaptive
+    jax.clear_caches()
+    with open(f"{results_dir}/adaptive_0.pkl", "wb") as file:
+        pickle.dump((us_adaptive, cs_adaptive, times_adaptive, actives), file)
+    adaptive_converged = objective_values_adaptive[-1]-optimum < 1e-5
+    logging.info(f"Adaptive refinement converged: {adaptive_converged}")
+
+
+def create_plots(Nrun, log_results, run_experiments):
+    if run_experiments:
+        logging.info("Running all experiments")
+        compute_experiments(Nrun, log_results)
+    else:
+        logging.info("Skipping experiments, processing results")
+
+    (
+        exp_nlgcg,
+        test_f,
+        test_kernel,
+        test_target,
+    ) = define_nlgcg_experiment()
+
+    # NLGCG
+    nlgcg_residuals = []
+    nlgcg_tests = []
+    nlgcg_supports = []
+    best_test_nlgcg = np.inf
+    for i in range(Nrun):
+        logging.info(f"Processing NLGCG (trial {i+1})")
+
+        try:
+            filename = f"{results_dir}/nlgcg_{i}.pkl"
+            with open(filename, "rb") as file:
+                us_nlgcg, cs_nlgcg, times_nlgcg = pickle.load(file)
+        except FileNotFoundError:
+            text_bit = filename.split("/")[-1].split(".")[0]
+            algo_name = text_bit.split("_")[0]
+            run_number = text_bit.split("_")[1]
+            logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+            return
+
+        supports_nlgcg = [len(u.coefficients) for u in us_nlgcg]
+        objective_values_nlgcg = [exp_nlgcg.j(u, c) for u, c in zip(us_nlgcg, cs_nlgcg)]
+        test_values_nlgcg = [
+            test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
+            for u, c, in zip(us_nlgcg, cs_nlgcg)
+        ]
+        best_test_iteration = np.argmin(test_values_nlgcg)
+        if test_values_nlgcg[best_test_iteration] < best_test_nlgcg:
+            best_test_nlgcg = test_values_nlgcg[best_test_iteration]
+            u_nlgcg = us_nlgcg[best_test_iteration]
+            c_nlgcg = cs_nlgcg[best_test_iteration]
+        local_residuals = adapt_time(
+            times_nlgcg,
+            [obj - optimum for obj in objective_values_nlgcg],
+            frame=frame_size,
+            resolution=resolution,
+        )
+        local_test_values = adapt_time(
+            times_nlgcg, test_values_nlgcg, frame=frame_size, resolution=resolution
+        )
+        nlgcg_residuals.append(local_residuals)
+        nlgcg_tests.append(local_test_values)
+        nlgcg_supports.append(supports_nlgcg)
+
+    nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
+    nlgcg_tests_mean = np.mean(bring_to_same_length(nlgcg_tests), axis=0)
+    nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
+    nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
+
+    # Particle Descent Stochastic
+    particle_residuals = []
+    particle_tests = []
+    particle_supports = []
+    best_test_particle = np.inf
+    for i in range(Nrun):
+        logging.info(f"Processing Particle descent (trial {i+1})")
+
+        try:
+            filename = f"{results_dir}/particle_{i}.pkl"
+            with open(filename, "rb") as file:
+                us_particle, cs_particle, times_particle = pickle.load(file)
+        except FileNotFoundError:
+            text_bit = filename.split("/")[-1].split(".")[0]
+            algo_name = text_bit.split("_")[0]
+            run_number = text_bit.split("_")[1]
+            logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+            return
+
+        supports_particle = [len(u.coefficients) for u in us_particle]
+        objective_values_particle = [exp_nlgcg.j(u, c) for u, c in zip(us_particle, cs_particle)]
+        test_values_particle = [
+            test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
+            for u, c, in zip(us_particle, cs_particle)
+        ]
+        best_test_iteration = np.argmin(test_values_particle)
+        if test_values_particle[best_test_iteration] < best_test_particle:
+            best_test_particle = test_values_particle[best_test_iteration]
+            u_particle = us_particle[best_test_iteration]
+            c_particle = cs_particle[best_test_iteration]
+
+        local_residuals = adapt_time(
+            times_particle,
+            [obj - optimum for obj in objective_values_particle],
+            frame=frame_size,
+            resolution=resolution,
+        )
+        test_values_particle = test_values_particle[: len(times_particle)]
+        local_test_values = adapt_time(
+            times_particle,
+            test_values_particle,
+            frame=frame_size,
+            resolution=resolution,
+        )
+        particle_residuals.append(local_residuals)
+        particle_tests.append(local_test_values)
+        particle_supports.append(supports_particle)
+
+    particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
+    particle_tests_mean = np.mean(bring_to_same_length(particle_tests), axis=0)
+    particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
+    particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
+
+    # Adaptive refinement
+    logging.info("Processing Adaptive refinement")
+
+    try:
+        filename = f"{results_dir}/adaptive_0.pkl"
+        with open(filename, "rb") as file:
+            us_adaptive, cs_adaptive, times_adaptive, actives = pickle.load(file)
+    except FileNotFoundError:
+        text_bit = filename.split("/")[-1].split(".")[0]
+        algo_name = text_bit.split("_")[0]
+        run_number = text_bit.split("_")[1]
+        logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+        return
+
+    supports_adaptive = [len(u.coefficients) for u in us_adaptive]
+    objective_values_adaptive = [exp_nlgcg.j(u, c) for u, c in zip(us_adaptive, cs_adaptive)]
     test_values_adaptive = [
         test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
         for u, c, in zip(us_adaptive, cs_adaptive)
@@ -510,7 +623,6 @@ def create_plots(Nrun: int = 10):
         frame=frame_size,
         resolution=resolution,
     )
-    del exp_adaptive, us_adaptive, cs_adaptive
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 
@@ -708,21 +820,6 @@ def create_plots(Nrun: int = 10):
     plt.savefig(results_dir / "coefficients.png", bbox_inches="tight")
     plt.close()
 
-    # for u, c, name in zip(
-    #     [u_nlgcg, u_particle, u_adaptive],
-    #     [c_nlgcg, c_particle, c_adaptive],
-    #     ["solution_nlgcg", "solution_particle", "solution_adaptive"],
-    # ):
-    #     with open(f"{results_dir}/{name}.pkl", "wb") as file:
-    #         pickle.dump((u, c), file)
-
-    # with open(results_dir / "solution_nlgcg.pkl", "rb") as file:
-    #     u_nlgcg, c_nlgcg = pickle.load(file)
-    # with open(results_dir / "solution_particle.pkl", "rb") as file:
-    #     u_particle, c_particle = pickle.load(file)
-    # with open(results_dir / "solution_adaptive.pkl", "rb") as file:
-    #     u_adaptive, c_adaptive = pickle.load(file)
-
     # Plot pruning of Particle Descent
     thresholds = np.linspace(0, 0.01, 26)
     max_coef = np.max(np.abs(u_particle.coefficients))
@@ -851,10 +948,20 @@ if __name__ == "__main__":
         default="results/function_approximation",
         help="Directory for plots",
     )
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        help="Extensive logging",
+    )
+    parser.add_argument(
+        "--run_experiments",
+        action=argparse.BooleanOptionalAction,
+        help="Run all experiments",
+    )
 
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    create_plots(Nrun=args.Nrun)
+    create_plots(Nrun=args.Nrun, log_results=args.verbose, run_experiments=args.run_experiments)

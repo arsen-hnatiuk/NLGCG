@@ -157,8 +157,8 @@ class ParticleDescent:
         objective_values = [self.j(u, c)]
         times = [time.perf_counter() - t_0]
         supports = [len(u.coefficients)]
-        us = [u_0.copy()]
-        all_cs = [c_0]
+        us = [u.copy()]
+        all_cs = [c]
 
         min_a_parameter = 1e-8
 
@@ -177,9 +177,7 @@ class ParticleDescent:
             inner = -self.grad_f(inner)
             inner_sum = np.sum(inner[: self.constant_dim])
 
-            inner_r_update = (
-                self.kernel_sign * p_u(theta) - self.alpha
-            )  # <-- There was an error in sign of alpha
+            inner_r_update = self.kernel_sign * p_u(theta) - self.alpha
             inner_cs_update = np.sign(cs) * inner_sum
             inner_theta_update = (self.kernel_sign * np.array(grad_p_u(theta)).T).T
 
@@ -287,11 +285,10 @@ class ParticleDescent:
                     )
             Nparticle = len(r)
 
-            times.append(time.perf_counter() - t_0)
-
-            objective_values.append(obj)
-            supports.append(Nparticle)
             if not (it + 1) % 100:
+                times.append(time.perf_counter() - t_0)
+                objective_values.append(obj)
+                supports.append(Nparticle)
                 us.append(u.copy())
                 all_cs.append(c)
 
