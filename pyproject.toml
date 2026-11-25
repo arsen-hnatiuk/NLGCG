@@ -10,12 +10,13 @@ readme = "README.md"
 dependencies = [
   "numpy",
   "scipy",
-  "jax"
+  "jax",
 ]
 
 [project.optional-dependencies]
 tests = [
   "cvxpy",
+  "scikit-learn",
   "matplotlib",
 ]
 

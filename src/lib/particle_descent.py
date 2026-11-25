@@ -38,6 +38,8 @@ class ParticleDescent:
         do_linesearch: bool = True,
         do_pruning: bool = False,
         residual_tolerance: float = 5e-14,
+        grad_tolerance: float = 1e-9,
+        callback: Callable | None = None,
     ):
         self.m = m
         self.j = j
@@ -59,6 +61,9 @@ class ParticleDescent:
         self.do_linesearch = do_linesearch
         self.do_pruning = do_pruning
         self.pred_factor = 0.1  # For line search
+        self.residual_tolerance = residual_tolerance
+        self.grad_tolerance = grad_tolerance
+        self.callback = callback
 
     def parameterize(
         self, r: np.ndarray, theta: np.ndarray, Nparticle: int = None
@@ -126,7 +131,7 @@ class ParticleDescent:
 
     def solve(
         self,
-        max_iters: int = 1000000,
+        max_iters: int = 1_000_000,
         max_time: float = 1e6,
         u_0: Measure = Measure(),
         c_0: float = 0,
@@ -157,6 +162,8 @@ class ParticleDescent:
         objective_values = [self.j(u, c)]
         times = [time.perf_counter() - t_0]
         supports = [len(u.coefficients)]
+        pred_values = []
+        # The pred value will be computed later
 
         min_a_parameter = 1e-8
 
@@ -240,8 +247,7 @@ class ParticleDescent:
                     decrease = obj - model
                     if decrease >= 0:
                         contraction = (
-                            max(self.a_parameter / 2, min_a_parameter)
-                            / self.a_parameter
+                            max(self.a_parameter / 2, min_a_parameter) / self.a_parameter
                         )
                         self.a_parameter = self.a_parameter * contraction
                         self.b_parameter = self.b_parameter * contraction
@@ -253,7 +259,9 @@ class ParticleDescent:
                         if contraction >= 0.99:
                             # exit line-search and accept step
                             logging.warning(
-                                f"line-search failed in iteration {it}: value - desired value is {decrease}, reduction is {objective_values[-1] - obj:1.3e}, gradient * step size is {pred:1.3e}, "
+                                f"line-search failed in iteration {it}: value"
+                                f" - desired value is {decrease}, reduction is {objective_values[-1] - obj:1.3e},"
+                                f" gradient * step size is {pred:1.3e}, "
                             )
                             # breakpoint()
                             decrease = 0
@@ -281,7 +289,8 @@ class ParticleDescent:
 
                 if log_results:
                     logging.info(
-                        f"dropped indices {np.where(dropped_ind)[0]} with r={r_drop} and theta={theta_drop}, function change {obj - old_obj}"
+                        f"dropped indices {np.where(dropped_ind)[0]} with r={r_drop} and theta={theta_drop},"
+                        f" function change {obj - old_obj}"
                     )
             Nparticle = len(r)
 
@@ -289,11 +298,12 @@ class ParticleDescent:
 
             objective_values.append(obj)
             supports.append(Nparticle)
+            pred_values.append(pred_raw)
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
                 success = False
                 break
-            elif pred_raw < 1e-9:
+            elif pred_raw < self.grad_tolerance:
                 logging.info(f"Convergence, gradient: {pred_raw:1.3e}")
                 success = True
                 break
@@ -312,18 +322,30 @@ class ParticleDescent:
                 logging.info(f"Divergence: {obj}, {np.max(objective_values[-101:-1])}")
                 success = False
                 break
-            if (it + 1) % 1000 == 0 and log_results:
-                logging.info(
-                    f"{it + 1}: supp: {Nparticle}, c value: {c:.3E}, a value: {self.a_parameter:.3E}, objective {obj:.14E}"
-                )
+            if (it + 1) % 1000 == 0:
+                if log_results:
+                    logging.info(
+                        f"{it + 1}: supp: {Nparticle}, c value: {c:.3E},"
+                        f" a value: {self.a_parameter:.3E}, objective {obj:.14E}"
+                    )
+                if self.callback is not None:
+                    terminate = self.callback(objective_values, pred_values)
+                    if terminate:
+                        logging.info("Convergence signaled from callback")
+                        success = True
+                        break
             if time.perf_counter() - t_0 > max_time:
                 logging.info("Max time reached")
+                success = False
                 break
             if it + 1 >= max_iters:
                 logging.info("Max iterations reached")
+                success = False
+                break
 
         logging.info(
-            f"CPG exited after {times[-1]:.3E} seconds with sparsity {len(u.support)} and success {success} to objective value {objective_values[-1]:.14E}"
+            f"CPG exited after {times[-1]:.3E} seconds with sparsity {len(u.support)} and"
+            f" success {success} to objective value {objective_values[-1]:.14E}"
         )
 
         return u, c, objective_values, supports, times, success
