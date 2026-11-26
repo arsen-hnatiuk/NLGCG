@@ -17,8 +17,6 @@ src_path = (module_path / "src").resolve()
 if src_path not in sys.path:
     sys.path.append(str(src_path))
 
-from nlgcg import NLGCG
-from src.lib.particle_descent import ParticleDescent
 from src.lib.measure import Measure
 
 os.environ["XLA_FLAGS"] = (
@@ -245,11 +243,6 @@ def define_experiment():
         )
         return to_return
 
-    # f = jax.jit(lambda y: 0.5 * jnp.sum((r(y) - target) ** 2) * 4 / len(target))
-    # test_f = (
-    #     lambda y: 0.5 * jnp.sum((test_r(y) - test_target) ** 2) * 4 / len(test_target)
-    # )
-
     @jax.jit
     def f(y):
         residuum = r(y) - target
@@ -342,6 +335,8 @@ def define_experiment():
 
 
 def define_nlgcg_experiment():
+    from nlgcg import NLGCG
+
     (
         true_function,
         target,
@@ -408,6 +403,8 @@ def define_nlgcg_experiment():
 
 
 def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6):
+    from src.lib.particle_descent import ParticleDescent
+
     (
         true_function,
         target,
@@ -444,15 +441,10 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         a_parameter=a_parameter,
         b_parameter=b_parameter,
         kernel=kernel,
-        constant_dim=constant_dim,
-        kernel_dim=kernel_dim,
+        constant_dim=len(target),
+        kernel_dim=len(target),
         alpha=alpha,
-        target=target,
-        g=g,
-        f=f,
         grad_f=grad_f,
-        hess_f=hess_f,
-        residual_tolerance=5e-14,
     )
     return (
         exp_particle,
@@ -546,8 +538,8 @@ def compute_experiments(Nrun, log_results):
     # Particle Descent Stochastic
     particle_converged = 0
     for i in range(Nrun):
-        success = False
-        while not success:
+        diverged = True
+        while diverged:
             logging.info(f"Running Particle descent (trial {i+1})")
             (
                 exp_particle,
@@ -567,6 +559,7 @@ def compute_experiments(Nrun, log_results):
                 supports_particle,
                 times_particle,
                 success,
+                diverged,
             ) = exp_particle.solve(
                 max_time=frame_size, mode="exponential", log_results=log_results
             )
@@ -793,7 +786,6 @@ def create_plots(Nrun, log_results, run_experiments):
         if test_values_particle_2[best_test_iteration] < best_test_particle_2:
             best_test_particle_2 = test_values_particle_2[best_test_iteration]
 
-        # us_particle and cs_particle are recorded only every 100 iterations
         local_residuals_particle_1 = adapt_time(
             times_particle,
             residuals_particle_1,

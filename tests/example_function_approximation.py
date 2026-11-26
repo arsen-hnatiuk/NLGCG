@@ -16,10 +16,7 @@ src_path = (module_path / "src").resolve()
 if src_path not in sys.path:
     sys.path.append(str(src_path))
 
-from nlgcg import NLGCG
 from src.lib.measure import Measure
-from src.lib.particle_descent import ParticleDescent
-from src.lib.adaptive_refinement import AdaptiveRefinement
 
 os.environ["XLA_FLAGS"] = (
     "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0 xla_python_client_preallocate=false xla_python_client_mem_fraction=0.5"
@@ -49,7 +46,7 @@ resolution = 1  # time resolution for the plots (seconds)
 frame_size = 1000  # Time frame tracked for the residuals (seconds)
 tol = 1e-12
 temperature = 1
-newton_tolerance = 1e-1
+newton_tolerance = 2e-1
 
 
 def define_experiment():
@@ -153,14 +150,6 @@ def define_experiment():
         residuum = y - test_target
         return 0.5 * residuum @ test_quadrature @ residuum
 
-    # @jax.jit
-    # def f(y: np.ndarray) -> float:
-    #     return 0.5 * jnp.sum((y - target) ** 2)
-
-    # @jax.jit
-    # def test_f(y: np.ndarray) -> float:
-    #     return 0.5 * jnp.sum((y - test_target) ** 2) / len(test_target)
-
     grad_f = jax.jit(jax.grad(f))
     hess_f = jax.jit(jax.hessian(f))
 
@@ -230,6 +219,8 @@ def define_experiment():
 
 
 def define_nlgcg_experiment():
+    from nlgcg import NLGCG
+
     (
         observations,
         target,
@@ -280,6 +271,8 @@ def define_nlgcg_experiment():
 
 
 def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6):
+    from src.lib.particle_descent import ParticleDescent
+
     (
         observations,
         target,
@@ -313,17 +306,14 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         constant_dim=len(target),
         kernel_dim=len(target),
         alpha=alpha,
-        target=target,
-        g=g,
-        f=f,
         grad_f=grad_f,
-        hess_f=hess_f,
-        residual_tolerance=5e-14,
     )
     return exp, test_f, test_kernel, test_target
 
 
 def define_adaptive_refinement_experiment():
+    from src.lib.adaptive_refinement import AdaptiveRefinement
+
     (
         observations,
         target,
@@ -440,8 +430,8 @@ def compute_experiments(Nrun, log_results):
     # Particle Descent Stochastic
     particle_converged = 0
     for i in range(Nrun):
-        success = False
-        while not success:
+        diverged = True
+        while diverged:
             logging.info(f"Running Particle descent (trial {i+1})")
             (
                 exp_particle,
@@ -456,6 +446,7 @@ def compute_experiments(Nrun, log_results):
                 supports_particle,
                 times_particle,
                 success,
+                diverged,
             ) = exp_particle.solve(
                 max_time=frame_size, mode="exponential", log_results=log_results
             )

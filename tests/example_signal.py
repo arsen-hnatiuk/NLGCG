@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import logging
 import sys
 import matplotlib.pyplot as plt
+import pickle
 from pathlib import Path
 
 from threading import Thread
@@ -18,7 +19,6 @@ src_path = (module_path / "src").resolve()
 if src_path not in sys.path:
     sys.path.append(str(src_path))
 
-from nlgcg import NLGCG
 from src.lib.measure import Measure
 
 os.environ["XLA_FLAGS"] = (
@@ -43,6 +43,11 @@ true_weights = np.array([-1.0, 0.7, 0.5])
 true_measure = Measure(support=true_sources, coefficients=true_weights)
 max_radius = (Omega[0][1] - Omega[0][0]) / 100.0
 optimum = 0.21975385192787872
+tol = 1e-10
+resolution = 0.1  # time resolution for the plots (seconds)
+frame_size = 100  # Time frame tracked for the residuals (seconds)
+temperature = 0.1
+newton_tolerance = 1  # 2e-2
 
 
 def define_experiment():
@@ -138,6 +143,8 @@ def define_experiment():
 
 
 def define_nlgcg_experiment():
+    from nlgcg import NLGCG
+
     (
         observations,
         target,
@@ -178,7 +185,7 @@ def define_nlgcg_experiment():
         dual_variable_goodness=0.3,
         constant_dim=len(target),
         kernel_dim=len(target),
-        newton_tolerance=2e-2,
+        newton_tolerance=newton_tolerance,
         max_radius=max_radius,
     )
     return exp, p
@@ -217,12 +224,7 @@ def define_particle_descent_experiment(m=50, a_parameter=0.001, b_parameter=0.00
         constant_dim=len(target),
         kernel_dim=len(target),
         alpha=alpha,
-        target=target,
-        g=g,
-        f=f,
         grad_f=grad_f,
-        hess_f=hess_f,
-        residual_tolerance=5e-14,
     )
     return exp
 
@@ -296,7 +298,7 @@ def particle_matrix_run_experiment(exp, args_dict: dict, name: str):
         min_len = 999
         if sucessful_conv(objective_values[-1].item()):
             # early termination, no need to continue
-            print(f"\tterminating {name}: {args_dict} reached tolerance.")
+            logging.info(f"\tterminating {name}: {args_dict} reached tolerance.")
             return True
         elif len(pred_values) > 2 * min_len:
             # do not try to diagnose early failure
@@ -327,10 +329,10 @@ def particle_matrix_run_experiment(exp, args_dict: dict, name: str):
     exp.callback = callback
 
     max_iters = int(1e6)
-    u, c, objective_values, supports, times, local_success = exp.solve(
+    u, c, objective_values, supports, times, local_success, diverged = exp.solve(
         max_iters=max_iters, max_time=5 * 60, mode="uniform"
     )
-    print(
+    logging.info(
         f"\t({name}): found optimum with value {objective_values[-1]}"
         f" (residual {objective_values[-1] - optimum})"
     )
@@ -353,7 +355,7 @@ def particle_matrix_worker(tasks: Queue, results: Queue):
     while True:
         task = tasks.get()
         if task is None:
-            print("task is None, shutting down!")
+            logging.info("task is None, shutting down!")
             tasks.task_done()
             break
         else:
@@ -363,39 +365,43 @@ def particle_matrix_worker(tasks: Queue, results: Queue):
         tasks.task_done()
 
 
-def create_particle_matrix():
+def create_particle_matrix(log_results):
 
     # Use NLGCG to get a truth solution
     exp, p = define_nlgcg_experiment()
     (
-        u,
-        c,
-        times,
-        supports,
+        us_nlgcg,
+        cs_nlgcg,
+        times_nlgcg,
+        supports_nlgcg,
         inner_loop,
         lgcg_lazy,
         lgcg_total,
-        objective_values,
+        objective_values_nlgcg,
         dropped_tot,
         epsilons,
         all_information,
-    ) = exp.solve(tol=5e-14, temperature=0.1)
-
-    print(
-        f"found optimimum with value {objective_values[-1]} (difference to ref {optimum} is {objective_values[-1] - optimum})"
+    ) = exp.solve(
+        tol=tol,
+        temperature=temperature,
+        log_results=log_results,
+        optimum=optimum,
+        max_time=frame_size,
     )
-    # print(f"times: {np.array(times)}")
-    # print(f"dropped: {dropped_tot}")
-    print(f"constant {c}")
-    print(f"solution {u}")
+    u = us_nlgcg[-1]
+    c = cs_nlgcg[-1]
+
+    logging.info(
+        f"Found optimimum with value {objective_values_nlgcg[-1]} (difference to ref {optimum} is {objective_values_nlgcg[-1] - optimum})"
+    )
+    logging.info(f"Constant {c}")
+    logging.info(f"Solution {u}")
 
     # logging.getLogger().setLevel(logging.WARN)
 
     # set hyperparameters
     b_parameter_factor = 0.01
     runs_per_n_particle = {12: 100, 24: 100, 50: 50, 100: 50, 150: 30, 200: 20}
-    # runs_per_n_particle = {12: 2, 24: 2, 120: 2, 200: 2}
-    # runs_per_n_particle = {200: 1}
 
     tasks = Queue()
     results = Queue()
@@ -403,7 +409,7 @@ def create_particle_matrix():
         n_thread = 8
     else:
         n_thread = 1
-        print(
+        logging.warning(
             "threading may not be useful with GIL enabled, use a threading enabled build and potentially `PYTHON_GIL=0 python`."
         )
 
@@ -436,10 +442,10 @@ def create_particle_matrix():
     while not results.empty():
         res_list.append(results.get())
 
-    print("Results over all trials:")
-    print("\n".join([f"{res}" for res in res_list]))
+    logging.info("Results over all trials:")
+    logging.info("\n".join([f"{res}" for res in res_list]))
 
-    print("Generating statistics:")
+    logging.info("Generating statistics:")
     stats_per_n_particle = {
         key: {
             "success": 0,
@@ -493,8 +499,8 @@ def create_particle_matrix():
         for n_part, stats_n in stats_per_n_particle.items()
     }
 
-    print("\n".join([f"{it}" for it in res_stats.items()]))
-    print(format_table(res_stats))
+    logging.info("\n".join([f"{it}" for it in res_stats.items()]))
+    logging.info(format_table(res_stats))
 
 
 def format_table(res_stats):
@@ -561,13 +567,8 @@ def bring_to_same_length(arrays):
     return new_arrays
 
 
-def create_plots(Nrun: int = 10):
-    resolution = 0.1  # time resolution for the plots (seconds)
-    frame_size = 100  # Time frame tracked for the residuals (seconds)
-
+def compute_experiments(Nrun, log_results):
     # NLGCG
-    nlgcg_residuals = []
-    nlgcg_supports = []
     nlgcg_converged = 0
     for i in range(Nrun):
         logging.info(f"Running NLGCG (trial {i+1})")
@@ -584,33 +585,26 @@ def create_plots(Nrun: int = 10):
             dropped_tot,
             epsilons,
             all_information,
-        ) = exp_nlgcg.solve(tol=5e-14, temperature=0.1, log_results=False)
-        local_residuals = adapt_time(
-            times_nlgcg,
-            [obj - optimum for obj in objective_values_nlgcg],
-            frame=frame_size,
-            resolution=resolution,
+        ) = exp_nlgcg.solve(
+            tol=tol,
+            temperature=temperature,
+            log_results=log_results,
+            optimum=optimum,
+            max_time=frame_size,
         )
-        if local_residuals[-1] < 1e-5:
+        with open(f"{results_dir}/nlgcg_{i}.pkl", "wb") as file:
+            pickle.dump((us_nlgcg, cs_nlgcg, times_nlgcg), file)
+        del exp_nlgcg
+        jax.clear_caches()
+        if objective_values_nlgcg[-1] - optimum < 1e-5:
             nlgcg_converged += 1
-        nlgcg_residuals.append(local_residuals)
-        nlgcg_supports.append(supports_nlgcg)
-        u_opt = us_nlgcg[-1]
-        c_opt = cs_nlgcg[-1]
-        del exp_nlgcg, us_nlgcg, cs_nlgcg
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
-    nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
-    nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
-    nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
-
     # Particle Descent Stochastic
-    particle_residuals = []
-    particle_supports = []
     particle_converged = 0
     for i in range(Nrun):
-        success = False
-        while not success:
+        diverged = True
+        while diverged:
             logging.info(f"Running Particle descent (trial {i+1})")
             exp_particle = define_particle_descent_experiment()
             (
@@ -620,29 +614,21 @@ def create_plots(Nrun: int = 10):
                 supports_particle,
                 times_particle,
                 success,
+                diverged,
             ) = exp_particle.solve(
-                max_time=frame_size, mode="uniform", log_results=False
+                max_time=frame_size, mode="exponential", log_results=log_results
             )
-            del exp_particle, us_particle, cs_particle
-        local_residuals = adapt_time(
-            times_particle,
-            [obj - optimum for obj in objective_values_particle],
-            frame=frame_size,
-            resolution=resolution,
-        )
-        if local_residuals[-1] < 1e-5:
+            del exp_particle
+            jax.clear_caches()
+        with open(f"{results_dir}/particle_{i}.pkl", "wb") as file:
+            pickle.dump((us_particle, cs_particle, times_particle), file)
+        if objective_values_particle[-1] - optimum < 1e-5:
             particle_converged += 1
-        particle_residuals.append(local_residuals)
-        particle_supports.append(supports_particle)
     logging.info(
         f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
     )
 
-    particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
-    particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
-    particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
-
-    # Adaptive refinement
+    # Adaptive Refinement
     logging.info("Running adaptive refinement")
     exp_adaptive = define_adaptive_refinement_experiment()
     (
@@ -655,14 +641,125 @@ def create_plots(Nrun: int = 10):
         times_adaptive,
         actives,
         supports_adaptive,
-    ) = exp_adaptive.solve(max_time=frame_size, log_results=False)
+    ) = exp_adaptive.solve(max_time=frame_size, log_results=log_results)
+    del exp_adaptive
+    jax.clear_caches()
+    with open(f"{results_dir}/adaptive_0.pkl", "wb") as file:
+        pickle.dump((us_adaptive, cs_adaptive, times_adaptive, actives), file)
+    adaptive_converged = objective_values_adaptive[-1] - optimum < 1e-5
+    logging.info(f"Adaptive refinement converged: {adaptive_converged}")
+
+
+def create_plots(Nrun, log_results, run_experiments):
+    if run_experiments:
+        logging.info("Running all experiments")
+        compute_experiments(Nrun, log_results)
+    else:
+        logging.info("Skipping experiments, processing results")
+    exp_nlgcg, p = define_nlgcg_experiment()
+
+    # NLGCG
+    nlgcg_residuals = []
+    nlgcg_supports = []
+    for i in range(Nrun):
+        logging.info(f"Processing NLGCG (trial {i+1})")
+
+        try:
+            filename = f"{results_dir}/nlgcg_{i}.pkl"
+            with open(filename, "rb") as file:
+                us_nlgcg, cs_nlgcg, times_nlgcg = pickle.load(file)
+        except FileNotFoundError:
+            text_bit = filename.split("/")[-1].split(".")[0]
+            algo_name = text_bit.split("_")[0]
+            run_number = text_bit.split("_")[1]
+            logging.error(
+                f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+            )
+            return
+
+        supports_nlgcg = [len(u.coefficients) for u in us_nlgcg]
+        objective_values_nlgcg = [exp_nlgcg.j(u, c) for u, c in zip(us_nlgcg, cs_nlgcg)]
+        local_residuals = adapt_time(
+            times_nlgcg,
+            [obj - optimum for obj in objective_values_nlgcg],
+            frame=frame_size,
+            resolution=resolution,
+        )
+        if local_residuals[-1] < 1e-5:
+            nlgcg_converged += 1
+        nlgcg_residuals.append(local_residuals)
+        nlgcg_supports.append(supports_nlgcg)
+        u_opt = us_nlgcg[-1]
+        c_opt = cs_nlgcg[-1]
+
+    nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
+    nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
+    nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
+
+    # Particle Descent Stochastic
+    particle_residuals = []
+    particle_supports = []
+    for i in range(Nrun):
+        logging.info(f"Processing Particle descent (trial {i+1})")
+
+        try:
+            filename = f"{results_dir}/particle_{i}.pkl"
+            with open(filename, "rb") as file:
+                us_particle, cs_particle, times_particle = pickle.load(file)
+        except FileNotFoundError:
+            text_bit = filename.split("/")[-1].split(".")[0]
+            algo_name = text_bit.split("_")[0]
+            run_number = text_bit.split("_")[1]
+            logging.error(
+                f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+            )
+            return
+
+        supports_particle = [len(u.coefficients) for u in us_particle]
+        objective_values_particle = [
+            exp_nlgcg.j(u, c) for u, c in zip(us_particle, cs_particle)
+        ]
+        local_residuals = adapt_time(
+            times_particle,
+            [obj - optimum for obj in objective_values_particle],
+            frame=frame_size,
+            resolution=resolution,
+        )
+        if local_residuals[-1] < 1e-5:
+            particle_converged += 1
+        particle_residuals.append(local_residuals)
+        particle_supports.append(supports_particle)
+
+    particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
+    particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
+    particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
+
+    # Adaptive refinement
+    logging.info("Processing Adaptive refinement")
+
+    try:
+        filename = f"{results_dir}/adaptive_0.pkl"
+        with open(filename, "rb") as file:
+            us_adaptive, cs_adaptive, times_adaptive, actives = pickle.load(file)
+    except FileNotFoundError:
+        text_bit = filename.split("/")[-1].split(".")[0]
+        algo_name = text_bit.split("_")[0]
+        run_number = text_bit.split("_")[1]
+        logging.error(
+            f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+        )
+        return
+
+    supports_adaptive = [len(u.coefficients) for u in us_adaptive]
+    objective_values_adaptive = [
+        exp_nlgcg.j(u, c) for u, c in zip(us_adaptive, cs_adaptive)
+    ]
     residuals_adaptive = adapt_time(
         times_adaptive,
         [obj - optimum for obj in objective_values_adaptive],
         frame=frame_size,
         resolution=resolution,
     )
-    del exp_adaptive, us_adaptive, cs_adaptive
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 
@@ -873,9 +970,19 @@ if __name__ == "__main__":
         help="Directory for plots",
     )
     parser.add_argument(
-        "--particle-matrix",
+        "--particle_matrix",
         action="store_true",
         help="Generate a particle matrix plot instead of algorithm comparison",
+    )
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        help="Extensive logging",
+    )
+    parser.add_argument(
+        "--run_experiments",
+        action=argparse.BooleanOptionalAction,
+        help="Run all experiments",
     )
 
     args = parser.parse_args()
@@ -884,6 +991,10 @@ if __name__ == "__main__":
     results_dir.mkdir(parents=True, exist_ok=True)
 
     if args.particle_matrix:
-        create_particle_matrix()
+        create_particle_matrix(log_results=args.verbose)
     else:
-        create_plots(Nrun=args.Nrun)
+        create_plots(
+            Nrun=args.Nrun,
+            log_results=args.verbose,
+            run_experiments=args.run_experiments,
+        )

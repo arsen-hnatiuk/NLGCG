@@ -45,8 +45,6 @@ class SSN:
             self.j = lambda u: float(
                 self.f(self.invariable_kernel + self.K @ u) + self.g(u)
             )
-            self.M = M
-            self.target_norm = np.mean(np.abs(self.target))
             self.maximum_iterations = maximum_iterations
             self.regularization = regularization
             self.machine_precision = 5e-14

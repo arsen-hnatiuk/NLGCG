@@ -19,7 +19,6 @@ class SSN_RKHS:
         maximum_iterations: int = 1000,
         log_results: bool = True,
     ) -> None:
-        self.machine_precision = 1e-12
         self.alpha = alpha
         self.g = g
         self.p = p  # -f'
