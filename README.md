@@ -7,8 +7,8 @@ Implementation and numerical testing of the parameter-free NLGCG algorithm
 
 To create a conda environment with the required dependencies, run the command
 ```
-conda env create -f environment.yml -n nlgcg_env
-conda activate nlgcg_env
+conda env create -f environment.yml -n envnlgcg
+conda activate env_nlgcg
 ```
 
 ### Using pip
@@ -24,10 +24,16 @@ To recreate the experiments from the paper, run
 ```
 python tests/example_signal.py
 python tests/example_function_approximation.py
-python tests/exampe_gmm_exact.py
 python tests/exampe_gmm.py
 python tests/example_pinn.py
+python tests/example_source_identificytion.py
 ```
+
+To run the experiments, add the `--run_experiments` argument. Otherwise, the code assumes that the experiments have already been run and only generates plots. For verbose outputs, add the `--verbose` argument.
+
+The generate the particle descent matrices in the signal processing experiment, add the `--particle_matrix` argument.
+
+The source identification example only serves to generate the NLGCG aglorithm visualization plot from page ... of the manuscript.
 
 ### Troubleshooting
 

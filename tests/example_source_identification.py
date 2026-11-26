@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import logging
 import sys
+import pickle
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
@@ -16,10 +17,7 @@ src_path = (module_path / "src").resolve()
 if src_path not in sys.path:
     sys.path.append(str(src_path))
 
-from nlgcg import NLGCG
 from src.lib.measure import Measure
-from src.lib.particle_descent import ParticleDescent
-from src.lib.adaptive_refinement import AdaptiveRefinement
 
 os.environ["XLA_FLAGS"] = (
     "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0 xla_python_client_preallocate=false xla_python_client_mem_fraction=0.5"
@@ -41,6 +39,11 @@ std_factor = 0.1
 true_sources = np.array([[0.28, 0.71], [0.51, 0.27], [0.71, 0.53]])
 true_weights = np.array([1, -0.7, 0.8])
 optimum = 0.238290673266492
+resolution = 0.1  # time resolution for the plots (seconds)
+frame_size = 1000  # Time frame tracked for the residuals (seconds)
+temperature = 0.1
+tol = 1e-12
+newton_tolerance = 1e-1  # 2e-2
 
 observations = (
     np.array(
@@ -180,10 +183,10 @@ def get_grid(size: int) -> np.ndarray:
     return grid
 
 
-def create_plots():
-    resolution = 0.1  # time resolution for the plots (seconds)
-    frame_size = 1000  # Time frame tracked for the residuals (seconds)
+def compute_experiments(Nrun, log_results):
+    from nlgcg import NLGCG
 
+    logging.info(f"Running NLGCG")
     exp = NLGCG(
         target=target,
         kernel=kernel,
@@ -206,12 +209,9 @@ def create_plots():
         dual_variable_goodness=0.3,
         constant_dim=len(target),
         kernel_dim=len(target),
-        newton_tolerance=2e-2,
+        newton_tolerance=newton_tolerance,
         max_radius=max_radius,
     )
-
-    nlgcg_residuals = []
-    nlgcg_supports = []
     (
         us_nlgcg,
         cs_nlgcg,
@@ -224,125 +224,42 @@ def create_plots():
         dropped_tot,
         epsilons,
         all_information,
-    ) = exp.solve(tol=5e-14, temperature=1, log_results=True, full_trace=True)
-    local_residuals = adapt_time(
-        times_nlgcg,
-        [obj - optimum for obj in objective_values_nlgcg],
-        frame=frame_size,
-        resolution=resolution,
+    ) = exp.solve(
+        tol=tol,
+        temperature=temperature,
+        log_results=log_results,
+        optimum=optimum,
+        full_trace=True,
     )
-    nlgcg_residuals.append(local_residuals)
-    nlgcg_supports.append(supports_nlgcg)
+    with open(f"{results_dir}/nlgcg_0.pkl", "wb") as file:
+        pickle.dump((us_nlgcg, cs_nlgcg, times_nlgcg, all_information), file)
+    del exp
+    jax.clear_caches()
 
-    nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
-    nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
-    nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
+
+def create_plots(Nrun, log_results, run_experiments):
+    if run_experiments:
+        logging.info("Running all experiments")
+        compute_experiments(Nrun, log_results)
+    else:
+        logging.info("Skipping experiments, processing results")
+
+    logging.info(f"Processing NLGCG")
+
+    try:
+        filename = f"{results_dir}/nlgcg_0.pkl"
+        with open(filename, "rb") as file:
+            us_nlgcg, cs_nlgcg, times_nlgcg, all_information = pickle.load(file)
+    except FileNotFoundError:
+        text_bit = filename.split("/")[-1].split(".")[0]
+        algo_name = text_bit.split("_")[0]
+        run_number = text_bit.split("_")[1]
+        logging.error(
+            f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+        )
+        return
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
-
-    # Plot residuals
-    fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG"]
-    styles = ["-"]
-    for array, name, style in zip(
-        [
-            nlgcg_residuals_mean,
-        ],
-        names,
-        styles,
-    ):
-        ax.semilogy(resolution * np.arange(len(array)), array, style, label=name)
-    ax.fill(
-        np.hstack(
-            (
-                resolution * np.arange(len(nlgcg_residuals_mean)),
-                resolution * np.arange(len(nlgcg_residuals_mean))[::-1],
-            )
-        ),
-        np.hstack(
-            (
-                np.max(bring_to_same_length(nlgcg_residuals), axis=0),
-                np.min(bring_to_same_length(nlgcg_residuals), axis=0)[::-1],
-            )
-        ),
-        "tab:blue",
-        alpha=0.3,
-    )
-    plt.ylabel("Objective residual")
-    plt.xlabel("Time (s)")
-    plt.ylim(1e-10, 100)
-    # plt.xlim(0, 100)
-    ax.legend()
-    plt.savefig(results_dir / "residuals.png", bbox_inches="tight")
-    plt.close()
-
-    # Plot supports
-    fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG"]
-    styles = ["-"]
-    for array, name, style in zip(
-        [
-            nlgcg_supports_mean,
-        ],
-        names,
-        styles,
-    ):
-        ax.semilogx(np.arange(len(array)), array, style, label=name)
-    ax.fill(
-        np.hstack(
-            (
-                np.arange(len(nlgcg_supports_mean)),
-                np.arange(len(nlgcg_supports_mean))[::-1],
-            )
-        ),
-        np.hstack(
-            (
-                np.array(nlgcg_supports_mean) - np.array(nlgcg_supports_std),
-                np.array(nlgcg_supports_mean)[::-1]
-                + np.array(nlgcg_supports_std)[::-1],
-            )
-        ),
-        "tab:blue",
-        alpha=0.3,
-    )
-    plt.ylabel("Support points")
-    plt.xlabel("Iterations")
-    # plt.xlim(0, 100)
-    ax.legend()
-    plt.savefig(results_dir / "supports.png", bbox_inches="tight")
-    plt.close()
-
-    # Plot number of coefficients to optimize
-    fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG"]
-    styles = ["-"]
-    colors = ["tab:blue"]
-    for array, name, style, color in zip([nlgcg_supports_mean], names, styles, colors):
-        ax.semilogx(np.arange(len(array)), array, style, label=name, c=color)
-    ax.fill(
-        np.hstack(
-            (
-                np.arange(len(nlgcg_supports_mean)),
-                np.arange(len(nlgcg_supports_mean))[::-1],
-            )
-        ),
-        np.hstack(
-            (
-                np.array(nlgcg_supports_mean) - np.array(nlgcg_supports_std),
-                np.array(nlgcg_supports_mean)[::-1]
-                + np.array(nlgcg_supports_std)[::-1],
-            )
-        ),
-        "tab:blue",
-        alpha=0.3,
-    )
-    plt.ylabel("Number of coefficients to optimize")
-    plt.xlabel("Iterations")
-    # plt.ylim(1e-12, 100);
-    # plt.xlim(0, 100);
-    ax.legend()
-    plt.savefig(results_dir / "coefficients.png", bbox_inches="tight")
-    plt.close()
 
     # Plot particles motion
     plot_vals = []
@@ -414,7 +331,7 @@ def create_plots():
             previous_final_positions = final_positions
 
             u_next, c_next = all_information[3 * ind + 3]
-            p_u = p(u_next, c_next)
+            p_u = p(u_0, c_0)
             P = lambda x: np.abs(p_u(x))
             vals = np.array(
                 [
@@ -454,14 +371,6 @@ def create_plots():
                     [pe.Stroke(linewidth=3, foreground="white"), pe.Normal()]
                 )
                 line_legend = True
-        for i, x in enumerate(killed_points):
-            if remove_legend:
-                ax.plot([x[0]], [x[1]], "X", c="r", markersize=9)
-            else:
-                ax.plot(
-                    [x[0]], [x[1]], "X", c="r", markersize=9, label="Removed position"
-                )
-                remove_legend = True
         for i, x in enumerate(start_points):
             if start_legend:
                 ax.plot([x[0]], [x[1]], "o", c="darkviolet", markersize=7)
@@ -488,6 +397,14 @@ def create_plots():
                     label="Newly added start position",
                 )
                 add_legend = True
+        for i, x in enumerate(killed_points):
+            if remove_legend:
+                ax.plot([x[0]], [x[1]], "X", c="r", markersize=9)
+            else:
+                ax.plot(
+                    [x[0]], [x[1]], "X", c="r", markersize=9, label="Removed position"
+                )
+                remove_legend = True
     fig.legend(loc="outside lower center", mode="expand", ncols=4)
     plt.savefig(results_dir / f"position_sliding.png", bbox_inches="tight")
     plt.close()
@@ -508,10 +425,22 @@ if __name__ == "__main__":
         default="results/source_identification",
         help="Directory for plots",
     )
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        help="Extensive logging",
+    )
+    parser.add_argument(
+        "--run_experiments",
+        action=argparse.BooleanOptionalAction,
+        help="Run all experiments",
+    )
 
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    create_plots()
+    create_plots(
+        Nrun=args.Nrun, log_results=args.verbose, run_experiments=args.run_experiments
+    )

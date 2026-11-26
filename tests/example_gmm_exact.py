@@ -17,9 +17,7 @@ src_path = (module_path / "src").resolve()
 if src_path not in sys.path:
     sys.path.append(str(src_path))
 
-from nlgcg import NLGCG
 from src.lib.measure import Measure
-from src.lib.particle_descent import ParticleDescent
 
 os.environ["XLA_FLAGS"] = (
     "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0 xla_python_client_preallocate=false xla_python_client_mem_fraction=0.5"
@@ -155,6 +153,8 @@ def define_experiment():
 
 
 def define_nlgcg_experiment():
+    from nlgcg import NLGCG
+
     (
         kernel_k,
         kernel_s,

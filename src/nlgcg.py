@@ -492,10 +492,13 @@ class NLGCG:
         mode: str = "stochastic_adaptive",
         inner_mode: str = "trust_region",
         temperature: float = 1.0,
-        log_results: bool = True,
+        log_results: bool = False,
         full_trace: bool = False,
         optimum: float = 0,
+        finite_dimensional_tol: float = 0,
     ) -> tuple:
+        if finite_dimensional_tol < self.machine_precision:
+            finite_dimensional_tol = self.machine_precision
         choices = ["Newton", "Coef", "Merge"]
         all_information = []
         self.M = min(self.M_0, float(self.j(u_0, c_0) / self.alpha))
@@ -518,11 +521,13 @@ class NLGCG:
 
         u_plus = u_0.copy()
         c_plus = c_0
-        phi_numerical = tol + 1
         lazy_step = True
-        while epsilon > tol and times[-1]<max_time:
+        while epsilon > tol and times[-1] < max_time:
             t = time.perf_counter()
-            if len(u_plus.coefficients):
+            if (
+                len(u_plus.coefficients)
+                and finite_dimensional_tol > self.machine_precision
+            ):
                 u_drop, dropped = self.drop_step(u_plus, c_plus)
                 dropped_tot += dropped
             else:
@@ -530,18 +535,18 @@ class NLGCG:
             u_coef, c_coef = self.finite_dimensional_step(
                 u_drop,
                 c_plus,
-                self.machine_precision,
+                finite_dimensional_tol,
                 mode="positive",
                 optimization="full",
                 log_results=log_results,
             )
-            if full_trace and len(u_coef.coefficients):
+            if full_trace:
                 all_information.append((u_coef, c_coef))
             self.M = float(self.j(u_coef, c_coef) / self.alpha)
             ssn_1_time = time.perf_counter() - t
 
             # Newton iterations
-            if len(u_coef.coefficients):# and not lazy_step:
+            if len(u_coef.coefficients):  # and not lazy_step:
                 t = time.perf_counter()
                 parameters, u_ks, radii, old_radii = self.local_merging_update_radii(
                     u_coef, c_coef
@@ -549,17 +554,17 @@ class NLGCG:
                 c_ks = c_coef
                 u_lm, c_lm = u_ks.copy(), c_ks
                 radii_time = time.perf_counter() - t
-    
+
                 t = time.perf_counter()
                 if self.experiment_type == "Euclidean":
                     full_parameters = np.hstack((parameters.flatten(), c_ks))
                 else:
                     full_parameters = parameters.flatten()
-                # if log_results and len(full_parameters):
-                #     e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
-                #     logging.info(
-                #         f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
-                #     )
+                if log_results and len(full_parameters):
+                    e_vals = np.linalg.eigvals(self.hess_f_N(full_parameters))
+                    logging.info(
+                        f"Eigenvalues of Hess f_N. min: {np.min(e_vals):.3E}, max: {np.max(e_vals):.3E}"
+                    )
 
                 full_parameters_new, newton_information = self.newton_step(
                     k=k,
@@ -589,11 +594,14 @@ class NLGCG:
                 iterate_values = [self.j(*iterate) for iterate in all_iterates]
                 choice_index = np.nanargmin(iterate_values)
                 choice = choices[choice_index]
-                u_choice, c_choice = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
+                u_choice, c_choice = (
+                    all_iterates[choice_index][0].copy(),
+                    all_iterates[choice_index][1],
+                )
                 u, c = self.finite_dimensional_step(
                     u_choice,
                     c_choice,
-                    self.machine_precision,
+                    finite_dimensional_tol,
                     mode="positive",
                     optimization="full",
                     log_results=log_results,
@@ -605,6 +613,9 @@ class NLGCG:
                 u = u_coef.copy()
                 c = c_coef
                 choice = "N/A"
+                radii_time = 0
+                newton_time = 0
+                ssn_2_time = 0
             p_u = self.p(u, c)
             q_u = self.g(u.coefficients) - u.duality_pairing(p_u)
 
@@ -627,9 +638,9 @@ class NLGCG:
                 logging.info(
                     f"{k}: choice: {choice}, lazy: {lazy_step}, support: {len(u.support)}, epsilon: {epsilon:.3E}, c_raw: {self.C_raw}, objective: {self.j(u, c):.17E}"
                 )
-                # logging.info(
-                #     f"ssn_1: {ssn_1_time:.3E}, radii: {radii_time:.3E}, newton: {newton_time:.3E}, ssn_2: {ssn_2_time:.3E}, lgcg: {lgcg_time:.3E}"
-                # )
+                logging.info(
+                    f"Times: Drop+Coef: {ssn_1_time:.3E}, Radii: {radii_time:.3E}, Newton: {newton_time:.3E}, 2nd Coef: {ssn_2_time:.3E}, LGCG: {lgcg_time:.3E}"
+                )
                 logging.info(
                     "============================================================================================="
                 )

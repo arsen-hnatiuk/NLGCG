@@ -30,14 +30,9 @@ class ParticleDescent:
         constant_dim: int,
         kernel_dim: int,
         alpha: float,
-        target: np.ndarray,
-        g: Callable,
-        f: Callable,
         grad_f: Callable,
-        hess_f: Callable,
         do_linesearch: bool = True,
         do_pruning: bool = False,
-        residual_tolerance: float = 5e-14,
         grad_tolerance: float = 1e-9,
         callback: Callable | None = None,
     ):
@@ -48,20 +43,14 @@ class ParticleDescent:
         self.Omega = Omega
         self.a_parameter = a_parameter
         self.b_parameter = b_parameter
-        self.residual_tolerance = residual_tolerance
         self.kernel = kernel
         self.constant_dim = constant_dim
         self.kernel_dim = kernel_dim
         self.alpha = alpha
-        self.target = target
-        self.g = g
-        self.f = f
         self.grad_f = grad_f
-        self.hess_f = hess_f
         self.do_linesearch = do_linesearch
         self.do_pruning = do_pruning
         self.pred_factor = 0.1  # For line search
-        self.residual_tolerance = residual_tolerance
         self.grad_tolerance = grad_tolerance
         self.callback = callback
 
@@ -136,10 +125,11 @@ class ParticleDescent:
         u_0: Measure = Measure(),
         c_0: float = 0,
         mode: str = "exponential",
-        log_results: bool = True,
+        log_results: bool = False,
     ):
         t_0 = time.perf_counter()
         success = True
+        diverged = False
         if len(u_0.coefficients):
             self.kernel_sign = np.sign(u_0.coefficients)
             r = np.sqrt(self.kernel_sign * u_0.coefficients * len(u_0.coefficients))
@@ -164,7 +154,6 @@ class ParticleDescent:
         supports = [len(u.coefficients)]
         us = [u.copy()]
         all_cs = [c]
-        pred_values = []
         pred_values = []
         # The pred value will be computed later
 
@@ -229,26 +218,13 @@ class ParticleDescent:
                     obj = np.inf
 
                 if self.do_linesearch:
-                    # # Konstantin's version
-                    # r_grad = (1 / Nparticle) * (r_old * r_update) / self.a_parameter
-                    # cs_grad = (1 / Nparticle) * (cs_old * cs_update) / self.a_parameter
-                    # theta_grad = (
-                    #     (1 / Nparticle)
-                    #     * (theta_update * r_old[:, None] ** 2)
-                    #     / self.b_parameter
-                    # )
-                    # pred = (
-                    #     r_grad.dot(r - r_old)
-                    #     + cs_grad.dot(cs - cs_old)
-                    #     + (theta_grad.reshape(-1).dot((theta - theta_old).reshape(-1)))
-                    # )
-
                     model = objective_values[-1] - self.pred_factor * pred
 
                     decrease = obj - model
                     if decrease >= 0:
                         contraction = (
-                            max(self.a_parameter / 2, min_a_parameter) / self.a_parameter
+                            max(self.a_parameter / 2, min_a_parameter)
+                            / self.a_parameter
                         )
                         self.a_parameter = self.a_parameter * contraction
                         self.b_parameter = self.b_parameter * contraction
@@ -306,18 +282,12 @@ class ParticleDescent:
             if np.isnan(obj) or np.isinf(obj):
                 logging.info("Divergence")
                 success = False
+                diverged = True
                 break
             elif pred_raw < self.grad_tolerance:
                 logging.info(f"Convergence, gradient: {pred_raw:1.3e}")
                 success = True
                 break
-            # elif (
-            #     np.max(np.abs(obj - np.array(objective_values[-101:])))
-            #     < self.residual_tolerance
-            # ):
-            #     logging.info("Convergence")
-            #     success = True
-            #     break
             elif (
                 not self.do_linesearch
                 and len(objective_values) > 100
@@ -325,6 +295,7 @@ class ParticleDescent:
             ):
                 logging.info(f"Divergence: {obj}, {np.max(objective_values[-101:-1])}")
                 success = False
+                diverged = True
                 break
             if (it + 1) % 1000 == 0:
                 if log_results:
@@ -352,4 +323,4 @@ class ParticleDescent:
             f" success {success} to objective value {objective_values[-1]:.14E}"
         )
 
-        return us, all_cs, objective_values, supports, times, success
+        return us, all_cs, objective_values, supports, times, success, diverged

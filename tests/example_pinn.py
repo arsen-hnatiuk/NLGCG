@@ -17,8 +17,6 @@ src_path = (module_path / "src").resolve()
 if src_path not in sys.path:
     sys.path.append(str(src_path))
 
-from nlgcg import NLGCG
-from src.lib.particle_descent import ParticleDescent
 from src.lib.measure import Measure
 
 os.environ["XLA_FLAGS"] = (
@@ -47,33 +45,17 @@ optimum = 129.249447292922
 tol = 1e-10
 resolution = 1  # time resolution for the plots (seconds)
 frame_size = 1000  # Time frame tracked for the residuals (seconds)
-pruning_thresholds = [0.00002,0.00008]
+pruning_thresholds = [0.00002, 0.00008]
 temperature = 1
-newton_tolerance = 3e-1
+newton_tolerance = 2e-1
 
 
 def define_experiment():
     @jax.jit
     def true_function(x: np.ndarray):
         return (
-            jnp.tanh(
-                4
-                * (
-                    0.3
-                    - jnp.linalg.norm(
-                        x - np.array([0.31, 0.31])
-                    )
-                )
-            )
-            + jnp.tanh(
-                12
-                * (
-                    0.15
-                    - jnp.linalg.norm(
-                        x + np.array([0.31, 0.31])
-                    )
-                )
-            )
+            jnp.tanh(4 * (0.3 - jnp.linalg.norm(x - np.array([0.31, 0.31]))))
+            + jnp.tanh(12 * (0.15 - jnp.linalg.norm(x + np.array([0.31, 0.31]))))
             + 2
         )
 
@@ -119,11 +101,15 @@ def define_experiment():
             if any(obs == omega_space[0][0]) or any(obs == omega_space[0][1])
         ]
     )
-    corner_indices = np.array([not all(np.linalg.norm(corners-obs,axis=1)) for obs in bound_observations])
-    train_mesh = ((omega_space[0][1]-omega_space[0][0])/(observation_resolution-1))**2 # Assume square domain
-    train_quadrature = train_mesh*np.ones(len(observations_raw)) # Trapezoid rule
-    train_quadrature[len(int_observations):] *= lambda_ / 2 # boundary points
-    train_quadrature[len(int_observations):][corner_indices] /= 2 # corner points
+    corner_indices = np.array(
+        [not all(np.linalg.norm(corners - obs, axis=1)) for obs in bound_observations]
+    )
+    train_mesh = (
+        (omega_space[0][1] - omega_space[0][0]) / (observation_resolution - 1)
+    ) ** 2  # Assume square domain
+    train_quadrature = train_mesh * np.ones(len(observations_raw))  # Trapezoid rule
+    train_quadrature[len(int_observations) :] *= lambda_ / 2  # boundary points
+    train_quadrature[len(int_observations) :][corner_indices] /= 2  # corner points
     train_quadrature = np.diag(train_quadrature)
 
     test_observations_raw = (
@@ -152,11 +138,18 @@ def define_experiment():
             if any(obs == omega_space[0][0]) or any(obs == omega_space[0][1])
         ]
     )
-    test_corner_indices = np.array([not all(np.linalg.norm(corners-obs,axis=1)) for obs in test_bound_observations])
-    test_mesh = ((omega_space[0][1]-omega_space[0][0])/(test_resolution-1))**2
-    test_quadrature = test_mesh*np.ones(len(test_observations_raw)) # Trapezoid rule
-    test_quadrature[len(test_int_observations):] /= 2 # boundary points
-    test_quadrature[len(test_int_observations):][test_corner_indices] /= 2 # corner points
+    test_corner_indices = np.array(
+        [
+            not all(np.linalg.norm(corners - obs, axis=1))
+            for obs in test_bound_observations
+        ]
+    )
+    test_mesh = ((omega_space[0][1] - omega_space[0][0]) / (test_resolution - 1)) ** 2
+    test_quadrature = test_mesh * np.ones(len(test_observations_raw))  # Trapezoid rule
+    test_quadrature[len(test_int_observations) :] /= 2  # boundary points
+    test_quadrature[len(test_int_observations) :][
+        test_corner_indices
+    ] /= 2  # corner points
     test_quadrature = np.diag(test_quadrature)
 
     int_target = int_function(int_observations) ** 3 - laplacian_int_function(
@@ -250,21 +243,16 @@ def define_experiment():
         )
         return to_return
 
-    # f = jax.jit(lambda y: 0.5 * jnp.sum((r(y) - target) ** 2) * 4 / len(target))
-    # test_f = (
-    #     lambda y: 0.5 * jnp.sum((test_r(y) - test_target) ** 2) * 4 / len(test_target)
-    # )
-
     @jax.jit
     def f(y):
-        residuum = (r(y) - target)
+        residuum = r(y) - target
         return 0.5 * residuum @ train_quadrature @ residuum
 
     @jax.jit
     def test_f(y):
-        residuum = (test_r(y) - test_target)
+        residuum = test_r(y) - test_target
         return 0.5 * residuum @ test_quadrature @ residuum
-    
+
     grad_f = jax.jit(jax.grad(f))
     hess_f = jax.jit(jax.hessian(f))
 
@@ -347,6 +335,8 @@ def define_experiment():
 
 
 def define_nlgcg_experiment():
+    from nlgcg import NLGCG
+
     (
         true_function,
         target,
@@ -413,6 +403,8 @@ def define_nlgcg_experiment():
 
 
 def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6):
+    from src.lib.particle_descent import ParticleDescent
+
     (
         true_function,
         target,
@@ -449,15 +441,10 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         a_parameter=a_parameter,
         b_parameter=b_parameter,
         kernel=kernel,
-        constant_dim=constant_dim,
-        kernel_dim=kernel_dim,
+        constant_dim=len(target),
+        kernel_dim=len(target),
         alpha=alpha,
-        target=target,
-        g=g,
-        f=f,
         grad_f=grad_f,
-        hess_f=hess_f,
-        residual_tolerance=5e-14,
     )
     return (
         exp_particle,
@@ -504,7 +491,8 @@ def bring_to_same_length(arrays):
         new_arrays.append(arr)
     return new_arrays
 
-def compute_experiments(Nrun, log_results):    
+
+def compute_experiments(Nrun, log_results):
     # NLGCG
     nlgcg_converged = 0
     for i in range(Nrun):
@@ -533,21 +521,25 @@ def compute_experiments(Nrun, log_results):
             epsilons,
             all_information,
         ) = exp_nlgcg.solve(
-            tol=tol, temperature=temperature, log_results=log_results, optimum=optimum, max_time=frame_size
+            tol=tol,
+            temperature=temperature,
+            log_results=log_results,
+            optimum=optimum,
+            max_time=frame_size,
         )
         with open(f"{results_dir}/nlgcg_{i}.pkl", "wb") as file:
             pickle.dump((us_nlgcg, cs_nlgcg, times_nlgcg), file)
         del exp_nlgcg, true_function, us_nlgcg, cs_nlgcg
         jax.clear_caches()
-        if objective_values_nlgcg[-1]-optimum < 1e-5:
+        if objective_values_nlgcg[-1] - optimum < 1e-5:
             nlgcg_converged += 1
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     # Particle Descent Stochastic
     particle_converged = 0
     for i in range(Nrun):
-        success = False
-        while not success:
+        diverged = True
+        while diverged:
             logging.info(f"Running Particle descent (trial {i+1})")
             (
                 exp_particle,
@@ -567,6 +559,7 @@ def compute_experiments(Nrun, log_results):
                 supports_particle,
                 times_particle,
                 success,
+                diverged,
             ) = exp_particle.solve(
                 max_time=frame_size, mode="exponential", log_results=log_results
             )
@@ -574,11 +567,12 @@ def compute_experiments(Nrun, log_results):
             jax.clear_caches()
         with open(f"{results_dir}/particle_{i}.pkl", "wb") as file:
             pickle.dump((us_particle, cs_particle, times_particle), file)
-        if objective_values_particle[-1]-optimum < 1e-5:
+        if objective_values_particle[-1] - optimum < 1e-5:
             particle_converged += 1
     logging.info(
-            f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
+        f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
     )
+
 
 def create_plots(Nrun, log_results, run_experiments):
     if run_experiments:
@@ -615,7 +609,9 @@ def create_plots(Nrun, log_results, run_experiments):
             text_bit = filename.split("/")[-1].split(".")[0]
             algo_name = text_bit.split("_")[0]
             run_number = text_bit.split("_")[1]
-            logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+            logging.error(
+                f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+            )
             return
 
         supports_nlgcg = [len(u.coefficients) for u in us_nlgcg]
@@ -646,9 +642,12 @@ def create_plots(Nrun, log_results, run_experiments):
         local_test_values = adapt_time(
             times_nlgcg, test_values_nlgcg, frame=frame_size, resolution=resolution
         )
+        local_supports = adapt_time(
+            times_nlgcg, supports_nlgcg, frame=frame_size, resolution=resolution
+        )
         nlgcg_residuals.append(local_residuals)
         nlgcg_tests.append(local_test_values)
-        nlgcg_supports.append(supports_nlgcg)
+        nlgcg_supports.append(local_supports)
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_tests_mean = np.mean(bring_to_same_length(nlgcg_tests), axis=0)
@@ -677,11 +676,15 @@ def create_plots(Nrun, log_results, run_experiments):
             text_bit = filename.split("/")[-1].split(".")[0]
             algo_name = text_bit.split("_")[0]
             run_number = text_bit.split("_")[1]
-            logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+            logging.error(
+                f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+            )
             return
-        
+
         supports_particle = [len(u.coefficients) for u in us_particle]
-        objective_values_particle = [exp_nlgcg.j(u, c) for u, c in zip(us_particle, cs_particle)]
+        objective_values_particle = [
+            exp_nlgcg.j(u, c) for u, c in zip(us_particle, cs_particle)
+        ]
         local_residuals = adapt_time(
             times_particle,
             [obj - optimum for obj in objective_values_particle],
@@ -733,8 +736,12 @@ def create_plots(Nrun, log_results, run_experiments):
         for u, c in zip(us_particle, cs_particle):
             if len(u.coefficients):
                 max_coef = np.max(np.abs(u.coefficients))
-                pruned_indices_1 = np.abs(u.coefficients) > pruning_thresholds[0] * max_coef
-                pruned_indices_2 = np.abs(u.coefficients) > pruning_thresholds[1] * max_coef
+                pruned_indices_1 = (
+                    np.abs(u.coefficients) > pruning_thresholds[0] * max_coef
+                )
+                pruned_indices_2 = (
+                    np.abs(u.coefficients) > pruning_thresholds[1] * max_coef
+                )
                 pruned_u_1 = Measure(
                     support=u.support[pruned_indices_1],
                     coefficients=u.coefficients[pruned_indices_1],
@@ -748,8 +755,8 @@ def create_plots(Nrun, log_results, run_experiments):
                 pruned_u_2 = u.copy()
             supports_particle_1.append(len(pruned_u_1.coefficients))
             supports_particle_2.append(len(pruned_u_2.coefficients))
-            residuals_particle_1.append(exp_nlgcg.j(pruned_u_1,c)-optimum)
-            residuals_particle_2.append(exp_nlgcg.j(pruned_u_2,c)-optimum)
+            residuals_particle_1.append(exp_nlgcg.j(pruned_u_1, c) - optimum)
+            residuals_particle_2.append(exp_nlgcg.j(pruned_u_2, c) - optimum)
             test_values_particle_1.append(
                 test_f(
                     pruned_u_1.duality_pairing(test_kernel, test_kernel_dim)
@@ -779,7 +786,6 @@ def create_plots(Nrun, log_results, run_experiments):
         if test_values_particle_2[best_test_iteration] < best_test_particle_2:
             best_test_particle_2 = test_values_particle_2[best_test_iteration]
 
-        # us_particle and cs_particle are recorded only every 100 iterations
         local_residuals_particle_1 = adapt_time(
             times_particle,
             residuals_particle_1,
@@ -824,14 +830,22 @@ def create_plots(Nrun, log_results, run_experiments):
         particle_tests_2.append(local_test_values_particle_2)
 
     particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
-    particle_residuals_mean_1 = np.mean(bring_to_same_length(particle_residuals_1), axis=0)
-    particle_residuals_mean_2 = np.mean(bring_to_same_length(particle_residuals_2), axis=0)
+    particle_residuals_mean_1 = np.mean(
+        bring_to_same_length(particle_residuals_1), axis=0
+    )
+    particle_residuals_mean_2 = np.mean(
+        bring_to_same_length(particle_residuals_2), axis=0
+    )
     particle_tests_mean = np.mean(bring_to_same_length(particle_tests), axis=0)
     particle_tests_mean_1 = np.mean(bring_to_same_length(particle_tests_1), axis=0)
     particle_tests_mean_2 = np.mean(bring_to_same_length(particle_tests_2), axis=0)
     particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
-    particle_supports_mean_1 = np.mean(bring_to_same_length(particle_supports_1), axis=0)
-    particle_supports_mean_2 = np.mean(bring_to_same_length(particle_supports_2), axis=0)
+    particle_supports_mean_1 = np.mean(
+        bring_to_same_length(particle_supports_1), axis=0
+    )
+    particle_supports_mean_2 = np.mean(
+        bring_to_same_length(particle_supports_2), axis=0
+    )
     particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
     particle_supports_std_1 = np.std(bring_to_same_length(particle_supports_1), axis=0)
     particle_supports_std_2 = np.std(bring_to_same_length(particle_supports_2), axis=0)
@@ -844,11 +858,21 @@ def create_plots(Nrun, log_results, run_experiments):
 
     # Plot residuals
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", rf"Particle Descent, $\vartheta={float(0)}$", rf"Particle Descent, $\vartheta={float(pruning_thresholds[0])}$", rf"Particle Descent, $\vartheta={float(pruning_thresholds[1])}$"]
+    names = [
+        "NLGCG",
+        rf"Particle Descent, $\vartheta={float(0)}$",
+        rf"Particle Descent, $\vartheta={float(pruning_thresholds[0])}$",
+        rf"Particle Descent, $\vartheta={float(pruning_thresholds[1])}$",
+    ]
     styles = ["-", "--", "--", "--"]
     colors = ["tab:blue", "tab:orange", "gold", "red"]
     for array, name, style, color in zip(
-        [nlgcg_residuals_mean, particle_residuals_mean, particle_residuals_mean_1, particle_residuals_mean_2],
+        [
+            nlgcg_residuals_mean,
+            particle_residuals_mean,
+            particle_residuals_mean_1,
+            particle_residuals_mean_2,
+        ],
         names,
         styles,
         colors,
@@ -930,11 +954,21 @@ def create_plots(Nrun, log_results, run_experiments):
 
     # Plot test scores
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", rf"Particle Descent, $\vartheta={float(0)}$", rf"Particle Descent, $\vartheta={float(pruning_thresholds[0])}$", rf"Particle Descent, $\vartheta={float(pruning_thresholds[1])}$"]
+    names = [
+        "NLGCG",
+        rf"Particle Descent, $\vartheta={float(0)}$",
+        rf"Particle Descent, $\vartheta={float(pruning_thresholds[0])}$",
+        rf"Particle Descent, $\vartheta={float(pruning_thresholds[1])}$",
+    ]
     styles = ["-", "--", "--", "--"]
     colors = ["tab:blue", "tab:orange", "gold", "red"]
     for array, name, style, color in zip(
-        [nlgcg_tests_mean, particle_tests_mean, particle_tests_mean_1, particle_tests_mean_2],
+        [
+            nlgcg_tests_mean,
+            particle_tests_mean,
+            particle_tests_mean_1,
+            particle_tests_mean_2,
+        ],
         names,
         styles,
         colors,
@@ -1016,7 +1050,12 @@ def create_plots(Nrun, log_results, run_experiments):
 
     # Plot supports
     fig, ax = plt.subplots(figsize=(5, 4))
-    names = ["NLGCG", rf"Particle Descent, $\vartheta={float(0)}$", rf"Particle Descent, $\vartheta={float(pruning_thresholds[0])}$", rf"Particle Descent, $\vartheta={float(pruning_thresholds[1])}$"]
+    names = [
+        "NLGCG",
+        rf"Particle Descent, $\vartheta={float(0)}$",
+        rf"Particle Descent, $\vartheta={float(pruning_thresholds[0])}$",
+        rf"Particle Descent, $\vartheta={float(pruning_thresholds[1])}$",
+    ]
     styles = ["-", "--", "--", "--"]
     colors = ["tab:blue", "tab:orange", "gold", "red"]
     for array, name, style, color in zip(
@@ -1024,7 +1063,7 @@ def create_plots(Nrun, log_results, run_experiments):
             nlgcg_supports_mean,
             particle_supports_mean,
             particle_supports_mean_1,
-            particle_supports_mean_2
+            particle_supports_mean_2,
         ],
         names,
         styles,
@@ -1043,9 +1082,8 @@ def create_plots(Nrun, log_results, run_experiments):
         ),
         np.hstack(
             (
-                np.array(nlgcg_supports_mean) - np.array(nlgcg_supports_std),
-                np.array(nlgcg_supports_mean)[::-1]
-                + np.array(nlgcg_supports_std)[::-1],
+                np.max(bring_to_same_length(nlgcg_supports), axis=0),
+                np.min(bring_to_same_length(nlgcg_supports), axis=0)[::-1],
             )
         ),
         "tab:blue",
@@ -1060,9 +1098,8 @@ def create_plots(Nrun, log_results, run_experiments):
         ),
         np.hstack(
             (
-                np.array(particle_supports_mean) - np.array(particle_supports_std),
-                np.array(particle_supports_mean)[::-1]
-                + np.array(particle_supports_std)[::-1],
+                np.max(bring_to_same_length(particle_supports), axis=0),
+                np.min(bring_to_same_length(particle_supports), axis=0)[::-1],
             )
         ),
         "tab:orange",
@@ -1077,9 +1114,8 @@ def create_plots(Nrun, log_results, run_experiments):
         ),
         np.hstack(
             (
-                np.array(particle_supports_mean_1) - np.array(particle_supports_std_1),
-                np.array(particle_supports_mean_1)[::-1]
-                + np.array(particle_supports_std_1)[::-1],
+                np.max(bring_to_same_length(particle_supports_1), axis=0),
+                np.min(bring_to_same_length(particle_supports_1), axis=0)[::-1],
             )
         ),
         "gold",
@@ -1094,16 +1130,15 @@ def create_plots(Nrun, log_results, run_experiments):
         ),
         np.hstack(
             (
-                np.array(particle_supports_mean_2) - np.array(particle_supports_std_2),
-                np.array(particle_supports_mean_2)[::-1]
-                + np.array(particle_supports_std_2)[::-1],
+                np.max(bring_to_same_length(particle_supports_1), axis=0),
+                np.min(bring_to_same_length(particle_supports_1), axis=0)[::-1],
             )
         ),
         "red",
         alpha=0.3,
     )
     plt.ylabel("Support points")
-    plt.xlabel("Iterations")
+    plt.xlabel("Time (s)")
     # plt.ylim(1e-12, 100)
     # plt.xlim(0, 100)
     ax.legend()
@@ -1181,8 +1216,9 @@ def create_plots(Nrun, log_results, run_experiments):
     # plt.close()
 
     # Plot the function with reconstruction error
-    x = test_observations[:,0]
-    y = test_observations[:,1]
+    x = test_observations[:, 0]
+    y = test_observations[:, 1]
+    true_vals = true_function(test_observations)
     pred_vals_nlgcg = test_r(
         u_nlgcg.duality_pairing(test_kernel, test_kernel_dim)
         + np.hstack(
@@ -1192,7 +1228,7 @@ def create_plots(Nrun, log_results, run_experiments):
             )
         )
     )
-    absolute_error_nlgcg = np.abs(pred_vals_nlgcg-test_target)
+    absolute_error_nlgcg = np.abs(pred_vals_nlgcg - test_target)
     pred_vals_particle = test_r(
         u_particle.duality_pairing(test_kernel, test_kernel_dim)
         + np.hstack(
@@ -1202,8 +1238,10 @@ def create_plots(Nrun, log_results, run_experiments):
             )
         )
     )
-    absolute_error_particle = np.abs(pred_vals_particle-test_target)
+    absolute_error_particle = np.abs(pred_vals_particle - test_target)
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
+    contour = ax1.tricontourf(x, y, true_vals, levels=100)
+    fig.colorbar(contour, ax=ax1)
     ax1.set_xlim(omega_space[0][0], omega_space[0][1])
     ax1.set_ylim(omega_space[1][0], omega_space[1][1])
     ax1.set_xlabel("True function")
@@ -1267,4 +1305,6 @@ if __name__ == "__main__":
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    create_plots(Nrun=args.Nrun, log_results=args.verbose, run_experiments=args.run_experiments)
+    create_plots(
+        Nrun=args.Nrun, log_results=args.verbose, run_experiments=args.run_experiments
+    )

@@ -16,10 +16,7 @@ src_path = (module_path / "src").resolve()
 if src_path not in sys.path:
     sys.path.append(str(src_path))
 
-from nlgcg import NLGCG
 from src.lib.measure import Measure
-from src.lib.particle_descent import ParticleDescent
-from src.lib.adaptive_refinement import AdaptiveRefinement
 
 os.environ["XLA_FLAGS"] = (
     "--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=0 xla_python_client_preallocate=false xla_python_client_mem_fraction=0.5"
@@ -38,18 +35,18 @@ larger_omega_space = np.array([[-1.1, 1.1], [-1.1, 1.1]])
 Omega = np.vstack((sigma_space, larger_omega_space))
 d = omega_space.shape[0]
 variance_exponent = 0.1
-alpha = 1e-5 # 1e-3
+alpha = 1e-5  # 1e-3
 observation_resolution = 20
 test_resolution = 100
 endpoint = False
 max_radius = (Omega[0][1] - Omega[0][0]) / 100
 true_function = lambda x: np.minimum(1 - np.abs(x[:, 0]), 1 - np.abs(x[:, 1]))
-optimum = 0 # 0.0339489271629
+optimum = 0  # 0.0339489271629
 resolution = 1  # time resolution for the plots (seconds)
 frame_size = 1000  # Time frame tracked for the residuals (seconds)
 tol = 1e-12
 temperature = 1
-newton_tolerance = 1e-1
+newton_tolerance = 2e-1
 
 
 def define_experiment():
@@ -67,12 +64,21 @@ def define_experiment():
         .reshape(len(omega_space), -1)
         .T
     )
-    train_edge_indices = np.array([any(obs == omega_space[0][0]) or any(obs == omega_space[0][1]) for obs in observations])
-    train_corner_indices = np.array([not all(np.linalg.norm(corners-obs,axis=1)) for obs in observations])
-    train_mesh = ((omega_space[0][1]-omega_space[0][0])/(observation_resolution-1))**2 # Assume square domain
-    train_quadrature = train_mesh*np.ones(len(observations)) # Trapezoid rule
-    train_quadrature[train_edge_indices] /= 2 # boundary points
-    train_quadrature[train_corner_indices] /= 2 # corner points
+    train_edge_indices = np.array(
+        [
+            any(obs == omega_space[0][0]) or any(obs == omega_space[0][1])
+            for obs in observations
+        ]
+    )
+    train_corner_indices = np.array(
+        [not all(np.linalg.norm(corners - obs, axis=1)) for obs in observations]
+    )
+    train_mesh = (
+        (omega_space[0][1] - omega_space[0][0]) / (observation_resolution - 1)
+    ) ** 2  # Assume square domain
+    train_quadrature = train_mesh * np.ones(len(observations))  # Trapezoid rule
+    train_quadrature[train_edge_indices] /= 2  # boundary points
+    train_quadrature[train_corner_indices] /= 2  # corner points
     train_quadrature = np.diag(train_quadrature)
 
     test_observations = (
@@ -87,12 +93,21 @@ def define_experiment():
         .reshape(len(omega_space), -1)
         .T
     )
-    test_edge_indices = np.array([any(obs == omega_space[0][0]) or any(obs == omega_space[0][1]) for obs in test_observations])
-    test_corner_indices = np.array([not all(np.linalg.norm(corners-obs,axis=1)) for obs in test_observations])
-    test_mesh = ((omega_space[0][1]-omega_space[0][0])/(test_resolution-1))**2 # Assume square domain
-    test_quadrature = test_mesh*np.ones(len(test_observations)) # Trapezoid rule
-    test_quadrature[test_edge_indices] /= 2 # boundary points
-    test_quadrature[test_corner_indices] /= 2 # corner points
+    test_edge_indices = np.array(
+        [
+            any(obs == omega_space[0][0]) or any(obs == omega_space[0][1])
+            for obs in test_observations
+        ]
+    )
+    test_corner_indices = np.array(
+        [not all(np.linalg.norm(corners - obs, axis=1)) for obs in test_observations]
+    )
+    test_mesh = (
+        (omega_space[0][1] - omega_space[0][0]) / (test_resolution - 1)
+    ) ** 2  # Assume square domain
+    test_quadrature = test_mesh * np.ones(len(test_observations))  # Trapezoid rule
+    test_quadrature[test_edge_indices] /= 2  # boundary points
+    test_quadrature[test_corner_indices] /= 2  # corner points
     test_quadrature = np.diag(test_quadrature)
 
     @jax.jit
@@ -127,21 +142,13 @@ def define_experiment():
 
     @jax.jit
     def f(y):
-        residuum = (y - target)
+        residuum = y - target
         return 0.5 * residuum @ train_quadrature @ residuum
 
     @jax.jit
     def test_f(y):
-        residuum = (y - test_target)
+        residuum = y - test_target
         return 0.5 * residuum @ test_quadrature @ residuum
-
-    # @jax.jit
-    # def f(y: np.ndarray) -> float:
-    #     return 0.5 * jnp.sum((y - target) ** 2)
-
-    # @jax.jit
-    # def test_f(y: np.ndarray) -> float:
-    #     return 0.5 * jnp.sum((y - test_target) ** 2) / len(test_target)
 
     grad_f = jax.jit(jax.grad(f))
     hess_f = jax.jit(jax.hessian(f))
@@ -212,6 +219,8 @@ def define_experiment():
 
 
 def define_nlgcg_experiment():
+    from nlgcg import NLGCG
+
     (
         observations,
         target,
@@ -262,6 +271,8 @@ def define_nlgcg_experiment():
 
 
 def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6):
+    from src.lib.particle_descent import ParticleDescent
+
     (
         observations,
         target,
@@ -295,17 +306,14 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         constant_dim=len(target),
         kernel_dim=len(target),
         alpha=alpha,
-        target=target,
-        g=g,
-        f=f,
         grad_f=grad_f,
-        hess_f=hess_f,
-        residual_tolerance=5e-14,
     )
     return exp, test_f, test_kernel, test_target
 
 
 def define_adaptive_refinement_experiment():
+    from src.lib.adaptive_refinement import AdaptiveRefinement
+
     (
         observations,
         target,
@@ -381,7 +389,7 @@ def bring_to_same_length(arrays):
     return new_arrays
 
 
-def compute_experiments(Nrun, log_results):    
+def compute_experiments(Nrun, log_results):
     # NLGCG
     nlgcg_converged = 0
     for i in range(Nrun):
@@ -405,21 +413,25 @@ def compute_experiments(Nrun, log_results):
             epsilons,
             all_information,
         ) = exp_nlgcg.solve(
-            tol=tol, temperature=temperature, log_results=log_results, optimum=optimum, max_time=frame_size
+            tol=tol,
+            temperature=temperature,
+            log_results=log_results,
+            optimum=optimum,
+            max_time=frame_size,
         )
         with open(f"{results_dir}/nlgcg_{i}.pkl", "wb") as file:
             pickle.dump((us_nlgcg, cs_nlgcg, times_nlgcg), file)
         del exp_nlgcg
         jax.clear_caches()
-        if objective_values_nlgcg[-1]-optimum < 1e-5:
+        if objective_values_nlgcg[-1] - optimum < 1e-5:
             nlgcg_converged += 1
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     # Particle Descent Stochastic
     particle_converged = 0
     for i in range(Nrun):
-        success = False
-        while not success:
+        diverged = True
+        while diverged:
             logging.info(f"Running Particle descent (trial {i+1})")
             (
                 exp_particle,
@@ -434,6 +446,7 @@ def compute_experiments(Nrun, log_results):
                 supports_particle,
                 times_particle,
                 success,
+                diverged,
             ) = exp_particle.solve(
                 max_time=frame_size, mode="exponential", log_results=log_results
             )
@@ -441,10 +454,10 @@ def compute_experiments(Nrun, log_results):
             jax.clear_caches()
         with open(f"{results_dir}/particle_{i}.pkl", "wb") as file:
             pickle.dump((us_particle, cs_particle, times_particle), file)
-        if objective_values_particle[-1]-optimum < 1e-5:
+        if objective_values_particle[-1] - optimum < 1e-5:
             particle_converged += 1
     logging.info(
-            f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
+        f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
     )
 
     # Adaptive Refinement
@@ -467,7 +480,7 @@ def compute_experiments(Nrun, log_results):
     jax.clear_caches()
     with open(f"{results_dir}/adaptive_0.pkl", "wb") as file:
         pickle.dump((us_adaptive, cs_adaptive, times_adaptive, actives), file)
-    adaptive_converged = objective_values_adaptive[-1]-optimum < 1e-5
+    adaptive_converged = objective_values_adaptive[-1] - optimum < 1e-5
     logging.info(f"Adaptive refinement converged: {adaptive_converged}")
 
 
@@ -501,7 +514,9 @@ def create_plots(Nrun, log_results, run_experiments):
             text_bit = filename.split("/")[-1].split(".")[0]
             algo_name = text_bit.split("_")[0]
             run_number = text_bit.split("_")[1]
-            logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+            logging.error(
+                f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+            )
             return
 
         supports_nlgcg = [len(u.coefficients) for u in us_nlgcg]
@@ -549,11 +564,15 @@ def create_plots(Nrun, log_results, run_experiments):
             text_bit = filename.split("/")[-1].split(".")[0]
             algo_name = text_bit.split("_")[0]
             run_number = text_bit.split("_")[1]
-            logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+            logging.error(
+                f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+            )
             return
 
         supports_particle = [len(u.coefficients) for u in us_particle]
-        objective_values_particle = [exp_nlgcg.j(u, c) for u, c in zip(us_particle, cs_particle)]
+        objective_values_particle = [
+            exp_nlgcg.j(u, c) for u, c in zip(us_particle, cs_particle)
+        ]
         test_values_particle = [
             test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
             for u, c, in zip(us_particle, cs_particle)
@@ -597,11 +616,15 @@ def create_plots(Nrun, log_results, run_experiments):
         text_bit = filename.split("/")[-1].split(".")[0]
         algo_name = text_bit.split("_")[0]
         run_number = text_bit.split("_")[1]
-        logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+        logging.error(
+            f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+        )
         return
 
     supports_adaptive = [len(u.coefficients) for u in us_adaptive]
-    objective_values_adaptive = [exp_nlgcg.j(u, c) for u, c in zip(us_adaptive, cs_adaptive)]
+    objective_values_adaptive = [
+        exp_nlgcg.j(u, c) for u, c in zip(us_adaptive, cs_adaptive)
+    ]
     test_values_adaptive = [
         test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
         for u, c, in zip(us_adaptive, cs_adaptive)
@@ -964,4 +987,6 @@ if __name__ == "__main__":
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    create_plots(Nrun=args.Nrun, log_results=args.verbose, run_experiments=args.run_experiments)
+    create_plots(
+        Nrun=args.Nrun, log_results=args.verbose, run_experiments=args.run_experiments
+    )
