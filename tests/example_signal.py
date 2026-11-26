@@ -685,8 +685,6 @@ def create_plots(Nrun, log_results, run_experiments):
             frame=frame_size,
             resolution=resolution,
         )
-        if local_residuals[-1] < 1e-5:
-            nlgcg_converged += 1
         nlgcg_residuals.append(local_residuals)
         nlgcg_supports.append(supports_nlgcg)
         u_opt = us_nlgcg[-1]
@@ -725,8 +723,6 @@ def create_plots(Nrun, log_results, run_experiments):
             frame=frame_size,
             resolution=resolution,
         )
-        if local_residuals[-1] < 1e-5:
-            particle_converged += 1
         particle_residuals.append(local_residuals)
         particle_supports.append(supports_particle)
 
