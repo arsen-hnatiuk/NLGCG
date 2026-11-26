@@ -248,7 +248,8 @@ class ParticleDescent:
                     decrease = obj - model
                     if decrease >= 0:
                         contraction = (
-                            max(self.a_parameter / 2, min_a_parameter) / self.a_parameter
+                            max(self.a_parameter / 2, min_a_parameter)
+                            / self.a_parameter
                         )
                         self.a_parameter = self.a_parameter * contraction
                         self.b_parameter = self.b_parameter * contraction

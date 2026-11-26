@@ -520,7 +520,7 @@ class NLGCG:
         c_plus = c_0
         phi_numerical = tol + 1
         lazy_step = True
-        while epsilon > tol and times[-1]<max_time:
+        while epsilon > tol and times[-1] < max_time:
             t = time.perf_counter()
             if len(u_plus.coefficients):
                 u_drop, dropped = self.drop_step(u_plus, c_plus)
@@ -541,7 +541,7 @@ class NLGCG:
             ssn_1_time = time.perf_counter() - t
 
             # Newton iterations
-            if len(u_coef.coefficients):# and not lazy_step:
+            if len(u_coef.coefficients):  # and not lazy_step:
                 t = time.perf_counter()
                 parameters, u_ks, radii, old_radii = self.local_merging_update_radii(
                     u_coef, c_coef
@@ -549,7 +549,7 @@ class NLGCG:
                 c_ks = c_coef
                 u_lm, c_lm = u_ks.copy(), c_ks
                 radii_time = time.perf_counter() - t
-    
+
                 t = time.perf_counter()
                 if self.experiment_type == "Euclidean":
                     full_parameters = np.hstack((parameters.flatten(), c_ks))
@@ -589,7 +589,10 @@ class NLGCG:
                 iterate_values = [self.j(*iterate) for iterate in all_iterates]
                 choice_index = np.nanargmin(iterate_values)
                 choice = choices[choice_index]
-                u_choice, c_choice = all_iterates[choice_index][0].copy(), all_iterates[choice_index][1]
+                u_choice, c_choice = (
+                    all_iterates[choice_index][0].copy(),
+                    all_iterates[choice_index][1],
+                )
                 u, c = self.finite_dimensional_step(
                     u_choice,
                     c_choice,

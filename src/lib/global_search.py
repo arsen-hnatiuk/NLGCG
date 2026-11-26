@@ -32,7 +32,7 @@ class GlobalSearch:
         mode: str = "stochastic_adaptive",
         max_found_points: int = 100,
         newton_tolerance: float = 5e-2,
-        sampling_probability: float = 1-1e-16,
+        sampling_probability: float = 1 - 1e-16,
         sample_size=200,
     ) -> None:
         self.Omega = Omega

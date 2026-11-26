@@ -235,7 +235,7 @@ def bring_to_same_length(arrays):
     return new_arrays
 
 
-def compute_experiments(Nrun, log_results):    
+def compute_experiments(Nrun, log_results):
     # NLGCG
     nlgcg_converged = 0
     for i in range(Nrun):
@@ -253,12 +253,14 @@ def compute_experiments(Nrun, log_results):
             dropped_tot,
             epsilons,
             all_information,
-        ) = exp_nlgcg.solve(tol=tol, temperature=temperature, log_results=log_results, optimum=optimum)
+        ) = exp_nlgcg.solve(
+            tol=tol, temperature=temperature, log_results=log_results, optimum=optimum
+        )
         with open(f"{results_dir}/nlgcg_{i}.pkl", "wb") as file:
             pickle.dump((us_nlgcg, cs_nlgcg, times_nlgcg), file)
         del exp_nlgcg
         jax.clear_caches()
-        if objective_values_nlgcg[-1]-optimum < 1e-5:
+        if objective_values_nlgcg[-1] - optimum < 1e-5:
             nlgcg_converged += 1
     logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
@@ -270,7 +272,7 @@ def create_plots(Nrun, log_results, run_experiments):
     else:
         logging.info("Skipping experiments, processing results")
     exp_nlgcg = define_nlgcg_experiment()
-    
+
     # NLGCG
     nlgcg_residuals = []
     nlgcg_supports = []
@@ -285,9 +287,11 @@ def create_plots(Nrun, log_results, run_experiments):
             text_bit = filename.split("/")[-1].split(".")[0]
             algo_name = text_bit.split("_")[0]
             run_number = text_bit.split("_")[1]
-            logging.error(f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results.")
+            logging.error(
+                f"Run {run_number} of algorithm {algo_name} not found. Use --run_experiments to generate results."
+            )
             return
-        
+
         supports_nlgcg = [len(u.coefficients) for u in us_nlgcg]
         objective_values_nlgcg = [exp_nlgcg.j(u, c) for u, c in zip(us_nlgcg, cs_nlgcg)]
         local_residuals = adapt_time(
@@ -482,4 +486,6 @@ if __name__ == "__main__":
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    create_plots(Nrun=args.Nrun, log_results=args.verbose, run_experiments=args.run_experiments)
+    create_plots(
+        Nrun=args.Nrun, log_results=args.verbose, run_experiments=args.run_experiments
+    )

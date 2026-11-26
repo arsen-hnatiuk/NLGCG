@@ -186,6 +186,7 @@ def define_nlgcg_experiment():
 
 def define_particle_descent_experiment(m=50, a_parameter=0.001, b_parameter=0.0005):
     from src.lib.particle_descent import ParticleDescent
+
     (
         observations,
         target,
@@ -229,6 +230,7 @@ def define_particle_descent_experiment(m=50, a_parameter=0.001, b_parameter=0.00
 def define_adaptive_refinement_experiment():
     # only import AdaptiveRefinement here, since cvxpy is not freethreading compatible
     from src.lib.adaptive_refinement import AdaptiveRefinement
+
     (
         observations,
         target,
@@ -321,6 +323,7 @@ def particle_matrix_run_experiment(exp, args_dict: dict, name: str):
                 print(f"\tnot terminating {name} {args_dict}: {obj_ext} is small enough to reach {optimum} at error {err_ext}.")
             """
         return False
+
     exp.callback = callback
 
     max_iters = int(1e6)
@@ -375,7 +378,7 @@ def create_particle_matrix():
         objective_values,
         dropped_tot,
         epsilons,
-        all_information
+        all_information,
     ) = exp.solve(tol=5e-14, temperature=0.1)
 
     print(
@@ -389,7 +392,7 @@ def create_particle_matrix():
     # logging.getLogger().setLevel(logging.WARN)
 
     # set hyperparameters
-    b_parameter_factor = .01
+    b_parameter_factor = 0.01
     runs_per_n_particle = {12: 100, 24: 100, 50: 50, 100: 50, 150: 30, 200: 20}
     # runs_per_n_particle = {12: 2, 24: 2, 120: 2, 200: 2}
     # runs_per_n_particle = {200: 1}
@@ -400,9 +403,14 @@ def create_particle_matrix():
         n_thread = 8
     else:
         n_thread = 1
-        print("threading may not be useful with GIL enabled, use a threading enabled build and potentially `PYTHON_GIL=0 python`.")
+        print(
+            "threading may not be useful with GIL enabled, use a threading enabled build and potentially `PYTHON_GIL=0 python`."
+        )
 
-    pool = [Thread(target=particle_matrix_worker, args=(tasks, results)) for _ in range(n_thread)]
+    pool = [
+        Thread(target=particle_matrix_worker, args=(tasks, results))
+        for _ in range(n_thread)
+    ]
     for w in pool:
         w.start()
 
@@ -454,12 +462,15 @@ def create_particle_matrix():
 
     def wilson_confidence_interval(successes, n, confidence_level=0.95):
         from scipy.stats import norm
+
         p = successes / n
         sigma = np.sqrt((p * (1 - p)) / n).item()
         z = norm.ppf((1 + confidence_level) / 2)
         z2on = (z**2) / n
         p_prime = (p + z2on / 2) / (1 + z2on)
-        sigma_prime = 1 / (2 * n) * np.sqrt(4 * n * (p * (1 - p)) + n * z2on) / (1 + z2on)
+        sigma_prime = (
+            1 / (2 * n) * np.sqrt(4 * n * (p * (1 - p)) + n * z2on) / (1 + z2on)
+        )
         lower_bound, upper_bound = p_prime - z * sigma_prime, p_prime + z * sigma_prime
         return p, sigma, (float(lower_bound), float(upper_bound)), n
 
@@ -469,8 +480,12 @@ def create_particle_matrix():
 
     res_stats = {
         n_part: {
-            "success": wilson_confidence_interval(stats_n["success"], runs_per_n_particle[n_part]),
-            "wrong_success": wilson_confidence_interval(stats_n["wrong_success"], runs_per_n_particle[n_part]),
+            "success": wilson_confidence_interval(
+                stats_n["success"], runs_per_n_particle[n_part]
+            ),
+            "wrong_success": wilson_confidence_interval(
+                stats_n["wrong_success"], runs_per_n_particle[n_part]
+            ),
             "obj": mean(stats_n["obj"], runs_per_n_particle[n_part]),
             "time": mean(stats_n["time"], runs_per_n_particle[n_part]),
             "iters": mean(stats_n["iters"], runs_per_n_particle[n_part]),
