@@ -35,13 +35,13 @@ larger_omega_space = np.array([[-1.1, 1.1], [-1.1, 1.1]])
 Omega = np.vstack((sigma_space, larger_omega_space))
 d = omega_space.shape[0]
 variance_exponent = 0.1
-alpha = 1e-5  # 1e-3
+alpha = 1e-5
 observation_resolution = 20
 test_resolution = 100
 endpoint = False
 max_radius = (Omega[0][1] - Omega[0][0]) / 100
 true_function = lambda x: np.minimum(1 - np.abs(x[:, 0]), 1 - np.abs(x[:, 1]))
-optimum = 0  # 0.0339489271629
+optimum = 0.0003470297509151517
 resolution = 1  # time resolution for the plots (seconds)
 frame_size = 1000  # Time frame tracked for the residuals (seconds)
 tol = 1e-12
@@ -80,6 +80,7 @@ def define_experiment():
     train_quadrature[train_edge_indices] /= 2  # boundary points
     train_quadrature[train_corner_indices] /= 2  # corner points
     train_quadrature = np.diag(train_quadrature)
+    inverse_train_quadrature = np.linalg.inv(train_quadrature)
 
     test_observations = (
         np.array(
@@ -215,6 +216,8 @@ def define_experiment():
         test_f,
         test_kernel,
         test_target,
+        test_observations,
+        inverse_train_quadrature,
     )
 
 
@@ -241,6 +244,8 @@ def define_nlgcg_experiment():
         test_f,
         test_kernel,
         test_target,
+        test_observations,
+        inverse_train_quadrature,
     ) = define_experiment()
     exp = NLGCG(
         target=target,
@@ -267,7 +272,7 @@ def define_nlgcg_experiment():
         newton_tolerance=newton_tolerance,
         max_radius=max_radius,
     )
-    return exp, test_f, test_kernel, test_target
+    return exp, test_f, test_kernel, test_target, test_observations
 
 
 def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6):
@@ -293,6 +298,8 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         test_f,
         test_kernel,
         test_target,
+        test_observations,
+        inverse_train_quadrature,
     ) = define_experiment()
     exp = ParticleDescent(
         m=m,
@@ -308,7 +315,7 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         alpha=alpha,
         grad_f=grad_f,
     )
-    return exp, test_f, test_kernel, test_target
+    return exp, test_f, test_kernel, test_target, test_observations
 
 
 def define_adaptive_refinement_experiment():
@@ -334,6 +341,8 @@ def define_adaptive_refinement_experiment():
         test_f,
         test_kernel,
         test_target,
+        test_observations,
+        inverse_train_quadrature,
     ) = define_experiment()
     exp = AdaptiveRefinement(
         observations=observations,
@@ -341,6 +350,7 @@ def define_adaptive_refinement_experiment():
         p=p,
         grad_p=grad_p,
         hess_p=hess_p,
+        inverse_quadrature=inverse_train_quadrature,
         Omega=Omega + 1e-5,
         kernel=kernel,
         constant_dim=len(target),
@@ -353,7 +363,7 @@ def define_adaptive_refinement_experiment():
         hess_f=hess_f,
         ssn_steps=1000,
     )
-    return exp, test_f, test_kernel, test_target
+    return exp, test_f, test_kernel, test_target,test_observations
 
 
 def adapt_time(times, residuals, frame=100, resolution=1):
@@ -391,7 +401,6 @@ def bring_to_same_length(arrays):
 
 def compute_experiments(Nrun, log_results):
     # NLGCG
-    nlgcg_converged = 0
     for i in range(Nrun):
         logging.info(f"Running NLGCG (trial {i+1})")
         (
@@ -399,6 +408,7 @@ def compute_experiments(Nrun, log_results):
             test_f,
             test_kernel,
             test_target,
+            test_observations,
         ) = define_nlgcg_experiment()
         (
             us_nlgcg,
@@ -423,9 +433,6 @@ def compute_experiments(Nrun, log_results):
             pickle.dump((us_nlgcg, cs_nlgcg, times_nlgcg), file)
         del exp_nlgcg
         jax.clear_caches()
-        if objective_values_nlgcg[-1] - optimum < 1e-5:
-            nlgcg_converged += 1
-    logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     # Particle Descent Stochastic
     particle_converged = 0
@@ -438,6 +445,7 @@ def compute_experiments(Nrun, log_results):
                 test_f,
                 test_kernel,
                 test_target,
+                test_observations,
             ) = define_particle_descent_experiment()
             (
                 us_particle,
@@ -462,7 +470,7 @@ def compute_experiments(Nrun, log_results):
 
     # Adaptive Refinement
     logging.info("Running adaptive refinement")
-    exp_adaptive, test_f, test_kernel, test_target = (
+    exp_adaptive, test_f, test_kernel, test_target, test_observations = (
         define_adaptive_refinement_experiment()
     )
     (
@@ -480,8 +488,6 @@ def compute_experiments(Nrun, log_results):
     jax.clear_caches()
     with open(f"{results_dir}/adaptive_0.pkl", "wb") as file:
         pickle.dump((us_adaptive, cs_adaptive, times_adaptive, actives), file)
-    adaptive_converged = objective_values_adaptive[-1] - optimum < 1e-5
-    logging.info(f"Adaptive refinement converged: {adaptive_converged}")
 
 
 def create_plots(Nrun, log_results, run_experiments):
@@ -496,13 +502,16 @@ def create_plots(Nrun, log_results, run_experiments):
         test_f,
         test_kernel,
         test_target,
+        test_observations,
     ) = define_nlgcg_experiment()
 
     # NLGCG
     nlgcg_residuals = []
     nlgcg_tests = []
     nlgcg_supports = []
+    nlgcg_supports_time = []
     best_test_nlgcg = np.inf
+    nlgcg_converged = 0
     for i in range(Nrun):
         logging.info(f"Processing NLGCG (trial {i+1})")
 
@@ -520,7 +529,10 @@ def create_plots(Nrun, log_results, run_experiments):
             return
 
         supports_nlgcg = [len(u.coefficients) for u in us_nlgcg]
+        nlgcg_supports.append(supports_nlgcg.copy())
         objective_values_nlgcg = [exp_nlgcg.j(u, c) for u, c in zip(us_nlgcg, cs_nlgcg)]
+        if objective_values_nlgcg[-1] - optimum < 1e-5:
+            nlgcg_converged += 1
         test_values_nlgcg = [
             test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
             for u, c, in zip(us_nlgcg, cs_nlgcg)
@@ -539,12 +551,18 @@ def create_plots(Nrun, log_results, run_experiments):
         local_test_values = adapt_time(
             times_nlgcg, test_values_nlgcg, frame=frame_size, resolution=resolution
         )
+        local_supports = adapt_time(
+            times_nlgcg, supports_nlgcg, frame=frame_size, resolution=resolution
+        )
         nlgcg_residuals.append(local_residuals)
         nlgcg_tests.append(local_test_values)
-        nlgcg_supports.append(supports_nlgcg)
+        nlgcg_supports_time.append(local_supports)
+
+    logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_tests_mean = np.mean(bring_to_same_length(nlgcg_tests), axis=0)
+    nlgcg_supports_time_mean = np.mean(bring_to_same_length(nlgcg_supports_time), axis=0)
     nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
     nlgcg_supports_std = np.std(bring_to_same_length(nlgcg_supports), axis=0)
 
@@ -553,6 +571,7 @@ def create_plots(Nrun, log_results, run_experiments):
     particle_tests = []
     particle_supports = []
     best_test_particle = np.inf
+    particle_converged = 0
     for i in range(Nrun):
         logging.info(f"Processing Particle descent (trial {i+1})")
 
@@ -573,6 +592,8 @@ def create_plots(Nrun, log_results, run_experiments):
         objective_values_particle = [
             exp_nlgcg.j(u, c) for u, c in zip(us_particle, cs_particle)
         ]
+        if objective_values_particle[-1] - optimum < 1e-5:
+            particle_converged += 1
         test_values_particle = [
             test_f(u.duality_pairing(test_kernel) + c * np.ones(test_target.shape))
             for u, c, in zip(us_particle, cs_particle)
@@ -596,14 +617,19 @@ def create_plots(Nrun, log_results, run_experiments):
             frame=frame_size,
             resolution=resolution,
         )
+        local_supports = adapt_time(
+            times_particle, supports_particle, frame=frame_size, resolution=resolution
+        )
         particle_residuals.append(local_residuals)
         particle_tests.append(local_test_values)
-        particle_supports.append(supports_particle)
+        particle_supports.append(local_supports)
 
     particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
     particle_tests_mean = np.mean(bring_to_same_length(particle_tests), axis=0)
     particle_supports_mean = np.mean(bring_to_same_length(particle_supports), axis=0)
     particle_supports_std = np.std(bring_to_same_length(particle_supports), axis=0)
+
+    logging.info(f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases.")
 
     # Adaptive refinement
     logging.info("Processing Adaptive refinement")
@@ -632,6 +658,7 @@ def create_plots(Nrun, log_results, run_experiments):
     best_test_iteration = np.argmin(
         np.array(test_values_adaptive)[np.array(times_adaptive) < frame_size]
     )
+    best_test_adaptive = test_values_adaptive[best_test_iteration]
     u_adaptive = us_adaptive[best_test_iteration]
     c_adaptive = cs_adaptive[best_test_iteration]
     residuals_adaptive = adapt_time(
@@ -646,6 +673,12 @@ def create_plots(Nrun, log_results, run_experiments):
         frame=frame_size,
         resolution=resolution,
     )
+    supports_adaptive = adapt_time(
+        times_adaptive, supports_adaptive, frame=frame_size, resolution=resolution
+    )
+
+    adaptive_converged = objective_values_adaptive[-1] - optimum < 1e-5
+    logging.info(f"Adaptive refinement converged: {adaptive_converged}")
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 
@@ -697,7 +730,7 @@ def create_plots(Nrun, log_results, run_experiments):
     )
     plt.ylabel("Objective residual")
     plt.xlabel("Time (s)")
-    plt.ylim(1e-10, 100)
+    plt.ylim(1e-10, 1)
     # plt.xlim(0, 100)
     ax.legend()
     plt.savefig(results_dir / "residuals.png", bbox_inches="tight")
@@ -762,12 +795,12 @@ def create_plots(Nrun, log_results, run_experiments):
     names = ["NLGCG", "Particle Descent", "Adaptive Refinement"]
     styles = ["-", "--", ":"]
     for array, name, style, color in zip(
-        [nlgcg_supports_mean, particle_supports_mean, supports_adaptive],
+        [nlgcg_supports_time_mean, particle_supports_mean, supports_adaptive],
         names,
         styles,
         colors,
     ):
-        ax.semilogx(np.arange(len(array)), array, style, label=name, color=color)
+        ax.plot(resolution*np.arange(len(array)), array, style, label=name, color=color)
     ax.fill(
         np.hstack(
             (
@@ -777,9 +810,8 @@ def create_plots(Nrun, log_results, run_experiments):
         ),
         np.hstack(
             (
-                np.array(particle_supports_mean) - np.array(particle_supports_std),
-                np.array(particle_supports_mean)[::-1]
-                + np.array(particle_supports_std)[::-1],
+                np.max(bring_to_same_length(particle_supports), axis=0),
+                np.min(bring_to_same_length(particle_supports), axis=0)[::-1],
             )
         ),
         "tab:orange",
@@ -788,22 +820,21 @@ def create_plots(Nrun, log_results, run_experiments):
     ax.fill(
         np.hstack(
             (
-                np.arange(len(nlgcg_supports_mean)),
-                np.arange(len(nlgcg_supports_mean))[::-1],
+                np.arange(len(nlgcg_supports_time_mean)),
+                np.arange(len(nlgcg_supports_time_mean))[::-1],
             )
         ),
         np.hstack(
             (
-                np.array(nlgcg_supports_mean) - np.array(nlgcg_supports_std),
-                np.array(nlgcg_supports_mean)[::-1]
-                + np.array(nlgcg_supports_std)[::-1],
+                np.max(bring_to_same_length(nlgcg_supports_time), axis=0),
+                np.min(bring_to_same_length(nlgcg_supports_time), axis=0)[::-1],
             )
         ),
         "tab:blue",
         alpha=0.3,
     )
     plt.ylabel("Support points")
-    plt.xlabel("Iterations")
+    plt.xlabel("Time (s)")
     # plt.xlim(0, 100)
     ax.legend()
     plt.savefig(results_dir / "supports.png", bbox_inches="tight")
@@ -877,36 +908,18 @@ def create_plots(Nrun, log_results, run_experiments):
     plt.close()
 
     # Plot the function with reconstruction error
-    resolution = 100
-    a_1 = np.linspace(omega_space[0][0], omega_space[0][1], resolution, endpoint=False)
-    a_2 = np.linspace(omega_space[1][0], omega_space[1][1], resolution, endpoint=False)
-    x, y = np.meshgrid(a_1, a_2)
-    points = np.array(list(zip(x.flatten(), y.flatten())))
-    vals = true_function(points).reshape((resolution, resolution))
-
-    def plot_kernel(omega: np.ndarray):
-        sigma = omega[0]
-        x_omega = omega[1:]
-        inner = -(jnp.linalg.norm(x_omega - points, axis=1) ** 2) / (2 * sigma**2)
-        outer = (jnp.exp(inner) * sigma**variance_exponent) / (np.sqrt(2 * np.pi) ** d)
-        return outer
-
-    pred_vals_nlgcg = u_nlgcg.duality_pairing(jax.vmap(plot_kernel)).reshape(
-        (resolution, resolution)
-    ) + c_nlgcg * np.ones((resolution, resolution))
-    pred_vals_particle = u_particle.duality_pairing(jax.vmap(plot_kernel)).reshape(
-        (resolution, resolution)
-    ) + c_particle * np.ones((resolution, resolution))
-    pred_vals_adaptive = u_adaptive.duality_pairing(jax.vmap(plot_kernel)).reshape(
-        (resolution, resolution)
-    ) + c_adaptive * np.ones((resolution, resolution))
-
+    x = test_observations[:, 0]
+    y = test_observations[:, 1]
+    true_vals = true_function(test_observations)
+    pred_vals_nlgcg = u_nlgcg.duality_pairing(test_kernel) + c_nlgcg * np.ones(test_target.shape)
+    pred_vals_particle = u_particle.duality_pairing(test_kernel) + c_particle * np.ones(test_target.shape)
+    pred_vals_adaptive = u_adaptive.duality_pairing(test_kernel) + c_adaptive * np.ones(test_target.shape)
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     ax1 = axes[0, 0]
     ax2 = axes[0, 1]
     ax3 = axes[1, 0]
     ax4 = axes[1, 1]
-    contour1 = ax1.contourf(x, y, vals, levels=100)
+    contour1 = ax1.tricontourf(x, y, true_vals, levels=100)
     fig.colorbar(contour1, ax=ax1)
     ax1.set_xlim(omega_space[0][0], omega_space[0][1])
     ax1.set_ylim(omega_space[1][0], omega_space[1][1])
@@ -917,7 +930,7 @@ def create_plots(Nrun, log_results, run_experiments):
         [u_nlgcg, u_particle, u_adaptive],
         [ax2, ax3, ax4],
     ):
-        contour = ax.contourf(x, y, pred_vals, levels=100)
+        contour = ax.tricontourf(x, y, pred_vals, levels=100)
         fig.colorbar(contour, ax=ax)
         for i, point in enumerate(u.support):
             if u.coefficients[i] < 0:
@@ -941,20 +954,8 @@ def create_plots(Nrun, log_results, run_experiments):
 
     logging.getLogger().setLevel(logging.INFO)  # Reinstate logging
 
-    # Best test value
-    test_value_nlgcg = test_f(
-        u_nlgcg.duality_pairing(test_kernel) + c_nlgcg * np.ones(test_target.shape)
-    )
-    test_value_particle = test_f(
-        u_particle.duality_pairing(test_kernel)
-        + c_particle * np.ones(test_target.shape)
-    )
-    test_value_adaptive = test_f(
-        u_adaptive.duality_pairing(test_kernel)
-        + c_adaptive * np.ones(test_target.shape)
-    )
     logging.info(
-        f"Best test value NLGCG: {test_value_nlgcg:.3E}, Particle Descent: {test_value_particle:.3E}, Adaptive Refinement: {test_value_adaptive:.3E}"
+        f"Best test value NLGCG: {best_test_nlgcg:.3E}, Particle Descent: {best_test_particle:.3E}, Adaptive Refinement: {best_test_adaptive:.3E}"
     )
 
 
