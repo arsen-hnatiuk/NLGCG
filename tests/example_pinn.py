@@ -441,8 +441,8 @@ def define_particle_descent_experiment(m=250, a_parameter=1e-5, b_parameter=5e-6
         a_parameter=a_parameter,
         b_parameter=b_parameter,
         kernel=kernel,
-        constant_dim=len(target),
-        kernel_dim=len(target),
+        constant_dim=constant_dim,
+        kernel_dim=kernel_dim,
         alpha=alpha,
         grad_f=grad_f,
     )
@@ -494,7 +494,6 @@ def bring_to_same_length(arrays):
 
 def compute_experiments(Nrun, log_results):
     # NLGCG
-    nlgcg_converged = 0
     for i in range(Nrun):
         logging.info(f"Running NLGCG (trial {i+1})")
         (
@@ -531,12 +530,8 @@ def compute_experiments(Nrun, log_results):
             pickle.dump((us_nlgcg, cs_nlgcg, times_nlgcg), file)
         del exp_nlgcg, true_function, us_nlgcg, cs_nlgcg
         jax.clear_caches()
-        if objective_values_nlgcg[-1] - optimum < 1e-5:
-            nlgcg_converged += 1
-    logging.info(f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases.")
 
     # Particle Descent Stochastic
-    particle_converged = 0
     for i in range(Nrun):
         diverged = True
         while diverged:
@@ -567,11 +562,6 @@ def compute_experiments(Nrun, log_results):
             jax.clear_caches()
         with open(f"{results_dir}/particle_{i}.pkl", "wb") as file:
             pickle.dump((us_particle, cs_particle, times_particle), file)
-        if objective_values_particle[-1] - optimum < 1e-5:
-            particle_converged += 1
-    logging.info(
-        f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
-    )
 
 
 def create_plots(Nrun, log_results, run_experiments):
@@ -598,6 +588,7 @@ def create_plots(Nrun, log_results, run_experiments):
     nlgcg_tests = []
     nlgcg_supports = []
     best_test_nlgcg = np.inf
+    nlgcg_converged = 0
     for i in range(Nrun):
         logging.info(f"Processing NLGCG (trial {i+1})")
 
@@ -616,6 +607,8 @@ def create_plots(Nrun, log_results, run_experiments):
 
         supports_nlgcg = [len(u.coefficients) for u in us_nlgcg]
         objective_values_nlgcg = [exp_nlgcg.j(u, c) for u, c in zip(us_nlgcg, cs_nlgcg)]
+        if objective_values_nlgcg[-1] - optimum < 1e-5:
+            nlgcg_converged += 1
         test_values_nlgcg = [
             test_f(
                 u.duality_pairing(test_kernel, test_kernel_dim)
@@ -649,6 +642,10 @@ def create_plots(Nrun, log_results, run_experiments):
         nlgcg_tests.append(local_test_values)
         nlgcg_supports.append(local_supports)
 
+    logging.info(
+        f"NLGCG converged in {(nlgcg_converged/Nrun)*100}% of cases."
+    )    
+
     nlgcg_residuals_mean = np.mean(bring_to_same_length(nlgcg_residuals), axis=0)
     nlgcg_tests_mean = np.mean(bring_to_same_length(nlgcg_tests), axis=0)
     nlgcg_supports_mean = np.mean(bring_to_same_length(nlgcg_supports), axis=0)
@@ -658,6 +655,7 @@ def create_plots(Nrun, log_results, run_experiments):
     particle_residuals = []
     particle_tests = []
     particle_supports = []
+    particle_converged = 0
     particle_residuals_1 = []  # Values for first pruning threshod
     particle_tests_1 = []
     particle_supports_1 = []
@@ -685,6 +683,8 @@ def create_plots(Nrun, log_results, run_experiments):
         objective_values_particle = [
             exp_nlgcg.j(u, c) for u, c in zip(us_particle, cs_particle)
         ]
+        if objective_values_particle[-1] - optimum < 1e-5:
+            particle_converged += 1
         local_residuals = adapt_time(
             times_particle,
             [obj - optimum for obj in objective_values_particle],
@@ -828,6 +828,10 @@ def create_plots(Nrun, log_results, run_experiments):
             resolution=resolution,
         )
         particle_tests_2.append(local_test_values_particle_2)
+
+    logging.info(
+        f"Particle descent converged in {(particle_converged/Nrun)*100}% of cases."
+    )  
 
     particle_residuals_mean = np.mean(bring_to_same_length(particle_residuals), axis=0)
     particle_residuals_mean_1 = np.mean(
@@ -1072,7 +1076,6 @@ def create_plots(Nrun, log_results, run_experiments):
         ax.plot(
             resolution * np.arange(len(array)), array, style, label=name, color=color
         )
-        # ax.semilogx(np.arange(len(array)), array, style, label=name, color=color)
     ax.fill(
         np.hstack(
             (

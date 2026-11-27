@@ -7,7 +7,7 @@ Implementation and numerical testing of the parameter-free NLGCG algorithm
 
 To create a conda environment with the required dependencies, run the command
 ```
-conda env create -f environment.yml -n envnlgcg
+conda env create -f environment.yml -n env_nlgcg
 conda activate env_nlgcg
 ```
 

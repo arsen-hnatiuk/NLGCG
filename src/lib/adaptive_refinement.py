@@ -27,6 +27,7 @@ class AdaptiveRefinement:
         p: Callable,  # Dual variable
         grad_p: Callable,
         hess_p: Callable,
+        inverse_quadrature: np.ndarray,
         Omega: np.ndarray,
         kernel: Callable,
         constant_dim: int,
@@ -46,6 +47,7 @@ class AdaptiveRefinement:
         self.p = p
         self.grad_p = grad_p
         self.hess_p = hess_p
+        self.inverse_quadrature=inverse_quadrature
         self.Omega = Omega
         self.machine_precision = 5e-14
         self.kernel = kernel
@@ -62,29 +64,31 @@ class AdaptiveRefinement:
             list(product(range(2), repeat=self.Omega.shape[0]))
         )
         self.vol_factor = np.sqrt(self.Omega.shape[1])
+        self.cvxpy_factor = 0.9
 
     def finite_dimensional_step(
         self,
-        vertices: np.ndarray,
-        coefs: np.ndarray,
+        vertices_input: np.ndarray,
+        coefs_input: np.ndarray,
         c: float,
         q_0: np.ndarray,
-        cvxpy_factor: float = 0.5,
         log_results: bool = True,
     ) -> np.ndarray:
         t = time.perf_counter()
-        cvxpy_len = len(vertices)
-        q = self.dual_problem_solver(vertices, q_0)
-        p_u = np.abs(self.kernel(vertices) @ q)
-        active_indices = p_u >= self.alpha * cvxpy_factor
-        vertices = vertices[active_indices].copy()
-        coefs = coefs[active_indices].copy()
+        cvxpy_len = len(vertices_input)
+        q = self.dual_problem_solver(vertices_input, q_0)
+        p_u = np.abs(self.kernel(vertices_input) @ q)
+        active_indices = p_u >= self.alpha * self.cvxpy_factor
+        vertices = vertices_input[active_indices].copy()
+        u_input = np.hstack((coefs_input, c))
+        coefs = coefs_input[active_indices].copy()
         cvxpy_time = time.perf_counter() - t
 
         t = time.perf_counter()
         K_support = np.hstack(
             (np.ones(self.constant_dim), np.zeros(self.kernel_dim - self.constant_dim))
         ).reshape(-1, 1)
+        K_input = np.hstack((self.kernel(vertices_input).T, K_support))
         K_support = np.hstack((self.kernel(vertices).T, K_support))
         u_0 = np.hstack((coefs, c))
         ssn_len = len(u_0)
@@ -105,13 +109,16 @@ class AdaptiveRefinement:
         ssn_solution = ssn.solve(
             tol=self.machine_precision, u_0=u_0, log_results=log_results
         )
-        solutions = [ssn_solution, u_0]
-        values = [self.f(K_support @ sol) + self.g(sol[:-1]) for sol in solutions]
-        best_value = np.argmin(values)
-        best_sol = solutions[best_value]
+        solutions = [ssn_solution, u_input]
+        values = [self.f(K_support @ ssn_solution) + self.g(ssn_solution[:-1]), self.f(K_input @ u_input) + self.g(u_input[:-1])]
+        best_index = np.argmin(values)
+        best_sol = solutions[best_index]
         new_coefs = best_sol[:-1]
         new_c = best_sol[-1]
-        new_vertices = vertices[new_coefs != 0].copy()
+        if best_index:
+            new_vertices = vertices_input[new_coefs != 0].copy()
+        else:
+            new_vertices = vertices[new_coefs != 0].copy()
         new_coefs = new_coefs[new_coefs != 0].copy()
         ssn_time = time.perf_counter() - t
         if log_results:
@@ -121,9 +128,10 @@ class AdaptiveRefinement:
         return new_vertices, new_coefs, new_c
 
     def dual_problem_solver(self, vertices: np.ndarray, q_0: np.ndarray) -> np.ndarray:
+        # We assume that the loss function is quadratic
         q = cp.Variable(self.target.shape[0])
         q.value = q_0
-        obj = cp.Maximize(-2 * self.target @ q - cp.sum(cp.square(q)))
+        obj = cp.Maximize(-2 * self.target @ q - q @ self.inverse_quadrature @ q)
         kernel_vertices = self.kernel(vertices)
         constraints = [
             kernel_vertices @ q <= self.alpha,
@@ -185,8 +193,8 @@ class AdaptiveRefinement:
     def initiate(self) -> tuple:
         first_cell_name = "0"
         first_cell = np.zeros(self.Omega.shape)
-        first_cell[:, 0] = self.Omega[:, 0]  # + 1e-4
-        first_cell[:, 1] = self.Omega[:, 1]  # - 1e-4
+        first_cell[:, 0] = self.Omega[:, 0] + 1e-3
+        first_cell[:, 1] = self.Omega[:, 1] - 1e-3
         vertices = first_cell[np.arange(len(first_cell)), self.split_configurations]
         cells_dict = {first_cell_name: first_cell}
         vertices_dict = {first_cell_name: np.arange(len(vertices))}
@@ -261,6 +269,7 @@ class AdaptiveRefinement:
         vertices: np.ndarray = np.array([]),
         max_time: int = 1e6,
         log_results: bool = True,
+        optimum: float = 0,
     ) -> tuple:
         t_0 = time.perf_counter()
         running_time = 0
@@ -378,9 +387,11 @@ class AdaptiveRefinement:
             cs.append(c)
             if log_results:
                 logging.info(
-                    f"{iter + 1}: cells: {len(cells_dict)}, support: {len(u.coefficients)}, objective: {self.j(u, c):.14E}"
+                    f"{iter + 1}: cells: {len(cells_dict)}, support: {len(u.coefficients)}, objective: {self.j(u, c):.16E}"
                 )
             if time.perf_counter() - t_0 > max_time:
+                break
+            if abs(objective_values[-1] - optimum) < 1e-12:
                 break
             p_u = self.p(u, c)
             grad_p_u = self.grad_p(u, c)
